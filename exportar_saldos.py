@@ -25,7 +25,8 @@ host = os.environ.get(
     "POSTGRES_HOST",
     "infraestructura-aurora-datawarehouse-instance-zxhlvevffc1c.cijt7auhxunw.us-east-1.rds.amazonaws.com"
 )
-puerto = int(os.environ.get("POSTGRES_PORT", "5432"))
+port_str = (os.environ.get("POSTGRES_PORT") or "5432").strip()
+puerto = int(port_str)
 base = os.environ.get("POSTGRES_DB", "finnegansbi")
 
 engine = create_engine(f"postgresql+psycopg2://{usuario}:{contraseña}@{host}:{puerto}/{base}")
