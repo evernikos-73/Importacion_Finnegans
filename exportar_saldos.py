@@ -17,10 +17,10 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(cred_dict, scope)
 client = gspread.authorize(creds)
 
 # ------------------------------------------------------------------------------
-# 📦 PostgreSQL (RECOMENDADO: usar variables de entorno para credenciales)
+# 📦 PostgreSQL
 # ------------------------------------------------------------------------------
 usuario = os.environ.get("POSTGRES_USER", "inpro2021nubeuser")
-contraseña = os.environ.get("POSTGRES_PASSWORD", "")  # <-- setear en tu entorno (NO hardcodear passwords)
+contraseña = os.environ.get("POSTGRES_PASSWORD", "")
 host = os.environ.get(
     "POSTGRES_HOST",
     "infraestructura-aurora-datawarehouse-instance-zxhlvevffc1c.cijt7auhxunw.us-east-1.rds.amazonaws.com"
@@ -36,7 +36,7 @@ engine = create_engine(f"postgresql+psycopg2://{usuario}:{contraseña}@{host}:{p
 def set_with_retry(worksheet, df, retries=3, wait=5):
     for i in range(1, retries + 1):
         try:
-            set_with_dataframe(worksheet, df)
+            set_with_dataframe(worksheet, df, include_index=False, resize=False)
             print("✅ Exportación completada.")
             return
         except Exception as e:
@@ -61,24 +61,31 @@ def update_with_retry(worksheet, values, range_name, retries=3, wait=5):
             else:
                 raise
 
+def get_or_create_worksheet(spreadsheet, title, rows=1000, cols=26):
+    try:
+        return spreadsheet.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"🆕 Creando hoja '{title}' ({rows}x{cols})...")
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
 # ------------------------------------------------------------------------------
 # 🧩 FUNCIÓN GENÉRICA EXPORTAR TABLA COMPLETA
-#    CAMBIO: permite limpiar SOLO un rango (ej: "A:D") en vez de borrar toda la hoja
+#    Permite limpiar SOLO un rango (ej: "A:D") en vez de borrar toda la hoja
 # ------------------------------------------------------------------------------
-def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_decimal=[], clear_range=None):
+def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_decimal=[], clear_range=None, create_if_missing=False):
     if isinstance(query_or_df, str):
         df = pd.read_sql(query_or_df, engine)
     else:
-        df = query_or_df
+        df = query_or_df.copy()  # evita side-effects (para reutilizar DF en churn/RFM)
 
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
 
-    worksheet = spreadsheet.worksheet(hoja_nombre)
+    worksheet = get_or_create_worksheet(spreadsheet, hoja_nombre) if create_if_missing else spreadsheet.worksheet(hoja_nombre)
 
-    # 🔧 Si se pide un rango específico, solo borra ese rango; si no, limpia toda la hoja (comportamiento original)
+    # Si se pide un rango específico, solo borra ese rango; si no, limpia toda la hoja (comportamiento original) :contentReference[oaicite:2]{index=2}
     if clear_range:
         worksheet.batch_clear([clear_range])
     else:
@@ -88,13 +95,13 @@ def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_deci
     print(f"✅ Exportado: {hoja_nombre}" + (f" (limpieza: {clear_range})" if clear_range else ""))
 
 # ------------------------------------------------------------------------------
-# 💡 FUNCIÓN ESPECÍFICA PARA CORREGIR IMPORTES DE SALDOS (División por 10000) 💡
+# 💡 FUNCIÓN ESPECÍFICA PARA CORREGIR IMPORTES DE SALDOS (División por 10000)
 # ------------------------------------------------------------------------------
 def exportar_tabla_corregida(query_or_df, spreadsheet, hoja_nombre):
     if isinstance(query_or_df, str):
         df = pd.read_sql(query_or_df, engine)
     else:
-        df = query_or_df
+        df = query_or_df.copy()
 
     columnas_a_corregir_y_dividir = [
         "importemonedatransaccion",
@@ -166,13 +173,16 @@ def exportar_sumas_y_saldos(query, spreadsheet, hoja_nombre, columnas_decimal=[]
     print("✅ Exportado sin encabezado: Aux Sumas y Saldos")
 
 # ------------------------------------------------------------------------------
-# Funciones para análisis de churn
+# Funciones para análisis de churn (OPT: reutiliza df_facturacion_full si se pasa)
 # ------------------------------------------------------------------------------
-def obtener_datos_facturacion():
-    """Obtiene los datos de facturación de la base de datos
-    Solo incluye ventas donde cuentanombre comience con 'Ventas Merc'
+def obtener_datos_facturacion(df_facturacion_full=None):
     """
-    query = """
+    Obtiene los datos para churn.
+    Mantiene la lógica original: solo ventas donde cuentanombre comience con 'Ventas Merc' :contentReference[oaicite:3]{index=3}
+    OPT: si se provee df_facturacion_full (SELECT *), se filtra en memoria para evitar otra consulta.
+    """
+    if df_facturacion_full is None:
+        query = """
 SELECT
     clientecodigo,
     clientenombre,
@@ -184,11 +194,20 @@ FROM public.inpro2021nube_facturacion
 WHERE cuentanombre LIKE 'Ventas Merc%%'
 ORDER BY clientecodigo, fechacomprobante
 """
-    df = pd.read_sql(query, engine)
-    df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"])
-    print(f"Datos cargados: {len(df)} registros (solo ventas 'Ventas Merc')")
-    print(f"Rango de fechas: {df['fechacomprobante'].min()} a {df['fechacomprobante'].max()}")
-    print(f"Total de clientes únicos: {df['clientecodigo'].nunique()}")
+        df = pd.read_sql(query, engine)
+    else:
+        cols = ["clientecodigo", "clientenombre", "fechacomprobante", "empresacodigo", "empresanombre", "cuentanombre"]
+        df = df_facturacion_full[cols].copy()
+        df = df[df["cuentanombre"].astype("string").str.startswith("Ventas Merc", na=False)]
+        df = df.sort_values(["clientecodigo", "fechacomprobante"])
+
+    df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"], errors="coerce")
+    df = df.dropna(subset=["fechacomprobante"])
+
+    print(f"Datos churn cargados: {len(df)} registros (solo ventas 'Ventas Merc')")
+    if len(df) > 0:
+        print(f"Rango de fechas: {df['fechacomprobante'].min()} a {df['fechacomprobante'].max()}")
+        print(f"Total de clientes únicos: {df['clientecodigo'].nunique()}")
     return df
 
 def obtener_ultima_compra_hasta_fecha(df, cliente, fecha_fin):
@@ -202,7 +221,8 @@ def calcular_meses_desde_fecha(fecha_inicio, fecha_fin):
     return delta.years * 12 + delta.months
 
 def calcular_status_mensual(df, cliente, primera_compra, mes_inicio, mes_fin, status_mes_anterior):
-    """Lógica de churn:
+    """
+    Lógica de churn:
     Si un cliente no compra durante 3 meses seguidos (<=3 meses),
     al 4to mes (después de 3 meses completos) se declara churn.
     """
@@ -348,6 +368,125 @@ def crear_matriz_churn(df):
     return pd.DataFrame(resultados)
 
 # ------------------------------------------------------------------------------
+# ✅ RFM (NUEVO) - Reutiliza df_facturacion_full (misma extracción)
+# ------------------------------------------------------------------------------
+def qscore(series: pd.Series, q: int = 5, reverse: bool = False) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    q_eff = int(min(q, s.nunique(dropna=True))) if s.nunique(dropna=True) > 0 else 1
+
+    if q_eff < 2:
+        scores = pd.Series(np.ones(len(s), dtype=int), index=s.index)
+    else:
+        ranked = s.rank(method="first", ascending=True)
+        raw = pd.qcut(ranked, q=q_eff, labels=False) + 1  # 1..q_eff
+        # Reescala a 1..q si q_eff < q
+        scores = np.ceil(raw.astype(float) * q / q_eff).astype(int)
+
+    return (q + 1) - scores if reverse else scores
+
+def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, cuenta_keyword: str = "venta") -> pd.DataFrame:
+    """
+    Reglas solicitadas:
+    - Solo líneas con cuentanombre contiene 'Venta' (case-insensitive)
+    - Excluir líneas con importemonedaprincipal < 0 (notas de crédito)
+    - No usa empresacodigo para agrupar
+    """
+    required = [
+        "clientecodigo", "clientenombre", "fechacomprobante",
+        "comprobantenumero", "cuentanombre", "importemonedaprincipal"
+    ]
+    missing = [c for c in required if c not in df_facturacion_full.columns]
+    if missing:
+        raise ValueError(f"Faltan columnas para RFM en df_facturacion_full: {missing}")
+
+    df = df_facturacion_full[required].copy()
+
+    # Fecha
+    df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"], errors="coerce")
+    df = df.dropna(subset=["fechacomprobante"])
+
+    # Monto numérico
+    df["importemonedaprincipal"] = pd.to_numeric(df["importemonedaprincipal"], errors="coerce")
+    df = df.dropna(subset=["importemonedaprincipal"])
+
+    # 1) Solo cuentas con "Venta"
+    mask_venta = df["cuentanombre"].astype("string").str.contains(cuenta_keyword, case=False, na=False)
+    df = df[mask_venta].copy()
+
+    # 2) Excluir negativos (notas de crédito)
+    df = df[df["importemonedaprincipal"] >= 0].copy()
+
+    if len(df) == 0:
+        return pd.DataFrame(columns=[
+            "clientecodigo", "clientenombre", "last_purchase", "recency_days",
+            "frequency", "monetary", "R_score", "F_score", "M_score", "RFM", "RFM_sum", "segment"
+        ])
+
+    # Consolidación a nivel transacción: cliente + fecha + comprobante (rellenando nulos)
+    df["_doc_filled"] = df["comprobantenumero"].astype("string")
+    m = df["_doc_filled"].isna()
+    df.loc[m, "_doc_filled"] = "SIN_COMPROBANTE_" + df.index[m].astype(str)
+
+    tx = (
+        df.groupby(["clientecodigo", "fechacomprobante", "_doc_filled"], as_index=False)
+          .agg(
+              clientenombre=("clientenombre", "first"),
+              tx_amount=("importemonedaprincipal", "sum")
+          )
+          .rename(columns={"fechacomprobante": "fecha", "_doc_filled": "comprobante"})
+    )
+
+    # Fecha de referencia
+    as_of_date = tx["fecha"].max() + pd.Timedelta(days=1)
+
+    rfm = (
+        tx.groupby(["clientecodigo"], as_index=False)
+          .agg(
+              clientenombre=("clientenombre", "first"),
+              last_purchase=("fecha", "max"),
+              frequency=("comprobante", "nunique"),
+              monetary=("tx_amount", "sum"),
+          )
+    )
+
+    rfm["recency_days"] = (as_of_date - rfm["last_purchase"]).dt.days
+
+    q = int(scoring_quantiles)
+    rfm["R_score"] = qscore(rfm["recency_days"], q=q, reverse=True)
+    rfm["F_score"] = qscore(rfm["frequency"], q=q, reverse=False)
+    rfm["M_score"] = qscore(rfm["monetary"], q=q, reverse=False)
+
+    rfm["RFM"] = rfm["R_score"].astype(str) + rfm["F_score"].astype(str) + rfm["M_score"].astype(str)
+    rfm["RFM_sum"] = rfm[["R_score", "F_score", "M_score"]].sum(axis=1)
+
+    def rfm_segment(row) -> str:
+        R, F, M = row["R_score"], row["F_score"], row["M_score"]
+        if (R >= 4) and (F >= 4) and (M >= 4):
+            return "Champions"
+        if (R >= 4) and (F >= 3):
+            return "Leales"
+        if (R == 5) and (F == 1):
+            return "Nuevos"
+        if (R >= 4) and (F in [1, 2]):
+            return "Promesas"
+        if (R == 3) and (F >= 3):
+            return "Atención"
+        if (R == 2) and (F in [1, 2]):
+            return "Por dormirse"
+        if (R <= 2) and (F >= 3):
+            return "En Riesgo"
+        if (R == 1) and (F == 1):
+            return "Perdidos"
+        return "Otros"
+
+    rfm["segment"] = rfm.apply(rfm_segment, axis=1)
+
+    # Orden sugerido
+    rfm = rfm.sort_values(["segment", "RFM_sum"], ascending=[True, False])
+
+    return rfm
+
+# ------------------------------------------------------------------------------
 # CONFIGURACIÓN DE QUERYS ESPECÍFICAS
 # ------------------------------------------------------------------------------
 QUERY_SALDOS_CLIENTES_FILTRADOS = """
@@ -382,7 +521,8 @@ select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
 # ------------------------------------------------------------------------------
 SPREADSHEET_SALDOS_URL = os.environ.get(
     "SPREADSHEET_SALDOS_URL",
-    "https://docs.google.com/spreadsheets/d/<ID_SHEET_SALDOS>/edit"
+    # Default apuntando al sheet que indicaste (puedes seguir sobreescribiendo por env var si ya lo usas)
+    "https://docs.google.com/spreadsheets/d/1oR_fdVCyn1cA8zwH4XgU5VK63cZaDC3I1i3-SWaUT20/edit"
 )
 SPREADSHEET_LIBRO_MAYOR_URL = os.environ.get(
     "SPREADSHEET_LIBRO_MAYOR_URL",
@@ -393,7 +533,9 @@ SPREADSHEET_STOCK_PUC_URL = os.environ.get(
     "https://docs.google.com/spreadsheets/d/<ID_SHEET_STOCK_PUC>/edit"
 )
 
+# ------------------------------------------------------------------------------
 # 📁 Spreadsheet 1
+# ------------------------------------------------------------------------------
 saldos_sheet = client.open_by_url(SPREADSHEET_SALDOS_URL)
 
 # 1. Saldos clientes filtrados
@@ -404,7 +546,7 @@ exportar_tabla_completa(
     ["importemonedatransaccion", "importemonedaprincipal", "importemonedasecundaria"]
 )
 
-# 2. Saldos proveedores (sin dividir)
+# 2. Saldos proveedores
 print("\nEjecutando exportación: Composicion Saldo Proveedores de INPROCIL S.A.")
 exportar_tabla_completa(
     QUERY_SALDOS_PROVEEDORES_FILTRADOS,
@@ -429,9 +571,13 @@ exportar_tabla_completa(
     ["cantidadpendiente"]
 )
 
-# 5. Facturación
+# 5. Facturación (OPT: se lee 1 vez y se reutiliza para churn y RFM)
+print("\nCargando facturación completa desde DW...")
+df_facturacion_full = pd.read_sql("SELECT * FROM public.inpro2021nube_facturacion", engine)
+print(f"Facturación total cargada: {len(df_facturacion_full)} filas")
+
 exportar_tabla_completa(
-    "SELECT * FROM public.inpro2021nube_facturacion",
+    df_facturacion_full,  # reutiliza DF (evita re-query)
     saldos_sheet,
     "Base Facturacion",
     [
@@ -445,19 +591,35 @@ exportar_tabla_completa(
 )
 
 # ------------------------------------------------------------------------------
-# ✅ Análisis de churn y exportación (CAMBIO PEDIDO)
-#    Cada vez que pega churn: SOLO BORRA columnas A:D en "Analisis_Churn"
+# ✅ Análisis de churn y exportación
+#    Mantiene el comportamiento original de limpiar solo A:D en "Analisis_Churn" :contentReference[oaicite:4]{index=4}
 # ------------------------------------------------------------------------------
 print("\nEjecutando análisis de churn...")
-df_facturacion = obtener_datos_facturacion()
-matriz_churn = crear_matriz_churn(df_facturacion)
+df_facturacion_churn = obtener_datos_facturacion(df_facturacion_full=df_facturacion_full)
+matriz_churn = crear_matriz_churn(df_facturacion_churn)
 
 exportar_tabla_completa(
     matriz_churn,
     saldos_sheet,
     "Analisis_Churn",
     [],
-    clear_range="A:D"   # 👈 Solo limpia columnas A a D; no toca E en adelante
+    clear_range="A:D"
+)
+
+# ------------------------------------------------------------------------------
+# ✅ RFM (NUEVO) - output a hoja "RFM" en el mismo spreadsheet
+# ------------------------------------------------------------------------------
+print("\nCalculando RFM...")
+df_rfm = calcular_rfm(df_facturacion_full=df_facturacion_full, scoring_quantiles=5, cuenta_keyword="venta")
+print(f"RFM generado: {len(df_rfm)} clientes")
+
+exportar_tabla_completa(
+    df_rfm,
+    saldos_sheet,
+    "RFM",
+    columnas_decimal=[],       # se exporta numérico; formateás en Sheets si querés
+    clear_range=None,
+    create_if_missing=True     # crea la hoja si no existe
 )
 
 # ------------------------------------------------------------------------------
