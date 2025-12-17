@@ -8,17 +8,14 @@ on:
 jobs:
   exportar:
     runs-on: ubuntu-latest
-
     env:
       GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-      POSTGRES_USER: ${{ secrets.POSTGRES_USER }}              # o fijo: inpro2021nubeuser
-      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}      # CLAVE
-      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}              # o fijo: infraestructura-aurora...
-      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}              # o fijo: "5432"
-      POSTGRES_DB: ${{ secrets.POSTGRES_DB }}                  # o fijo: finnegansbi
 
-      # si querés fijar el sheet acá (o podés dejarlo hardcodeado en el script)
-      SPREADSHEET_SALDOS_URL: "https://docs.google.com/spreadsheets/d/1oR_fdVCyn1cA8zwH4XgU5VK63cZaDC3I1i3-SWaUT20/edit"
+      POSTGRES_USER: "inpro2021nubeuser"
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      POSTGRES_HOST: "infraestructura-aurora-datawarehouse-instance-zxhlvevffc1c.cijt7auhxunw.us-east-1.rds.amazonaws.com"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "finnegansbi"
 
     steps:
       - name: Clonar repo
