@@ -10,12 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-
       POSTGRES_USER: "inpro2021nubeuser"
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
       POSTGRES_HOST: "infraestructura-aurora-datawarehouse-instance-zxhlvevffc1c.cijt7auhxunw.us-east-1.rds.amazonaws.com"
       POSTGRES_PORT: "5432"
       POSTGRES_DB: "finnegansbi"
+      SPREADSHEET_SALDOS_URL: "https://docs.google.com/spreadsheets/d/1oR_fdVCyn1cA8zwH4XgU5VK63cZaDC3I1i3-SWaUT20/edit"
+      SPREADSHEET_LIBRO_MAYOR_URL: "https://docs.google.com/spreadsheets/d/1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA/edit"
+      SPREADSHEET_STOCK_PUC_URL: "https://docs.google.com/spreadsheets/d/1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA/edit"
 
     steps:
       - name: Clonar repo
