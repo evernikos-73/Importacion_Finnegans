@@ -614,13 +614,30 @@ print("\nCalculando RFM...")
 df_rfm = calcular_rfm(df_facturacion_full=df_facturacion_full, scoring_quantiles=5, cuenta_keyword="venta")
 print(f"RFM generado: {len(df_rfm)} clientes")
 
+# Asegurar orden y que sean solo 12 columnas (A-L)
+rfm_cols = [
+    "clientecodigo",
+    "clientenombre",
+    "last_purchase",
+    "recency_days",
+    "frequency",
+    "monetary",
+    "R_score",
+    "F_score",
+    "M_score",
+    "RFM",
+    "RFM_sum",
+    "segment",
+]
+df_rfm = df_rfm[rfm_cols].copy()
+
 exportar_tabla_completa(
     df_rfm,
     saldos_sheet,
     "RFM",
-    columnas_decimal=[],       # se exporta numérico; formateás en Sheets si querés
-    clear_range=None,
-    create_if_missing=True     # crea la hoja si no existe
+    columnas_decimal=[],
+    clear_range="A:L",          # <-- clave: NO borrar toda la hoja
+    create_if_missing=True
 )
 
 # ------------------------------------------------------------------------------
