@@ -86,7 +86,7 @@ def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_deci
 
     worksheet = get_or_create_worksheet(spreadsheet, hoja_nombre) if create_if_missing else spreadsheet.worksheet(hoja_nombre)
 
-    # Si se pide un rango específico, solo borra ese rango; si no, limpia toda la hoja (comportamiento original) :contentReference[oaicite:2]{index=2}
+    # Si se pide un rango específico, solo borra ese rango; si no, limpia toda la hoja (comportamiento original)
     if clear_range:
         worksheet.batch_clear([clear_range])
     else:
@@ -174,13 +174,134 @@ def exportar_sumas_y_saldos(query, spreadsheet, hoja_nombre, columnas_decimal=[]
     print("✅ Exportado sin encabezado: Aux Sumas y Saldos")
 
 # ------------------------------------------------------------------------------
-# Funciones para análisis de churn (OPT: reutiliza df_facturacion_full si se pasa)
+# ✅ AUX: Mapeo de clientes agrupados (Grupo Económico)
 # ------------------------------------------------------------------------------
-def obtener_datos_facturacion(df_facturacion_full=None):
+def norm_name(x) -> str:
+    if x is None:
+        return ""
+    s = str(x).strip().upper()
+    s = " ".join(s.split())
+    return s
+
+def obtener_mapa_clientes_agrupados(spreadsheet, sheet_name="AUX_Agrup_Clientes") -> dict:
+    """
+    Lee hoja AUX_Agrup_Clientes:
+      - Col A: clientenombre (razón social)
+      - Col B: Cliente Agrupado (grupo económico)
+    Devuelve dict: { norm(clientenombre) -> Cliente Agrupado }.
+    Si no existe mapeo o está vacío, se usa el nombre original.
+    """
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"⚠️ No existe la hoja '{sheet_name}'. Se continuará sin agrupación.")
+        return {}
+
+    values = ws.get("A:B")
+    if not values or len(values) < 2:
+        print(f"⚠️ Hoja '{sheet_name}' vacía o sin datos. Se continuará sin agrupación.")
+        return {}
+
+    # Detectar y omitir header si corresponde
+    start_idx = 0
+    h0 = norm_name(values[0][0]) if len(values[0]) > 0 else ""
+    h1 = norm_name(values[0][1]) if len(values[0]) > 1 else ""
+    if ("CLIENTENOMBRE" in h0) and ("CLIENTE AGRUPADO" in h1):
+        start_idx = 1
+
+    mapa = {}
+    for row in values[start_idx:]:
+        if not row or len(row) < 2:
+            continue
+        orig = row[0]
+        grp = row[1]
+        k = norm_name(orig)
+        if not k:
+            continue
+        grp_clean = str(grp).strip() if grp is not None else ""
+        if grp_clean == "":
+            continue
+        mapa[k] = grp_clean
+    print(f"✅ Mapeo de clientes agrupados cargado: {len(mapa)} reglas")
+    return mapa
+
+def aplicar_agrupacion_cliente(df: pd.DataFrame, mapa: dict, source_col="clientenombre", target_col="cliente_agrupado") -> pd.DataFrame:
+    """
+    Agrega columna target_col con el nombre agrupado.
+    Si no existe mapeo para un nombre, deja el original.
+    """
+    if source_col not in df.columns:
+        raise ValueError(f"No existe columna '{source_col}' en el dataframe para agrupar clientes.")
+
+    if not mapa:
+        df[target_col] = df[source_col].astype("string")
+        df[target_col] = df[target_col].fillna("").astype(str).str.strip()
+        df.loc[df[target_col] == "", target_col] = df[source_col].astype("string").fillna("").astype(str).str.strip()
+        return df
+
+    def map_fn(x):
+        if pd.isna(x):
+            return ""
+        sx = str(x).strip()
+        if sx == "":
+            return ""
+        return mapa.get(norm_name(sx), sx)
+
+    df[target_col] = df[source_col].apply(map_fn).astype(str).str.strip()
+    # fallback si quedó vacío
+    m = df[target_col].astype(str).str.strip() == ""
+    df.loc[m, target_col] = df.loc[m, source_col].astype("string").fillna("").astype(str).str.strip()
+    return df
+
+# ------------------------------------------------------------------------------
+# ✅ AUX: Tipo de cambio USD desde AUX!A:B
+# ------------------------------------------------------------------------------
+def parse_number_locale(val):
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "":
+        return None
+    s = s.replace(" ", "")
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def obtener_tc_usd_desde_aux(spreadsheet, sheet_name="AUX", range_name="A:B") -> float:
+    """
+    Lee AUX!A:B y toma el ÚLTIMO valor numérico de la columna B como tipo de cambio ARS/USD.
+    """
+    ws = spreadsheet.worksheet(sheet_name)
+    values = ws.get(range_name)
+
+    tc = None
+    for row in values:
+        if len(row) < 2:
+            continue
+        v = parse_number_locale(row[1])
+        if v is not None:
+            tc = v
+
+    if tc is None or tc <= 0:
+        raise RuntimeError("No se pudo obtener un tipo de cambio USD válido desde AUX!A:B (columna B).")
+    return tc
+
+# ------------------------------------------------------------------------------
+# Funciones para análisis de churn (AGRUPADO POR CLIENTE AGRUPADO)
+# ------------------------------------------------------------------------------
+def obtener_datos_facturacion(df_facturacion_full=None, mapa_clientes=None):
     """
     Obtiene los datos para churn.
-    Mantiene la lógica original: solo ventas donde cuentanombre comience con 'Ventas Merc' :contentReference[oaicite:3]{index=3}
+    Mantiene la lógica original: solo ventas donde cuentanombre comience con 'Ventas Merc'
     OPT: si se provee df_facturacion_full (SELECT *), se filtra en memoria para evitar otra consulta.
+
+    NUEVO: se agrega cliente_agrupado aplicando AUX_Agrup_Clientes y se calcula churn por cliente_agrupado.
     """
     if df_facturacion_full is None:
         query = """
@@ -193,26 +314,30 @@ SELECT
     cuentanombre
 FROM public.inpro2021nube_facturacion
 WHERE cuentanombre LIKE 'Ventas Merc%%'
-ORDER BY clientecodigo, fechacomprobante
+ORDER BY clientenombre, fechacomprobante
 """
         df = pd.read_sql(query, engine)
     else:
-        cols = ["clientecodigo", "clientenombre", "fechacomprobante", "empresacodigo", "empresanombre", "cuentanombre"]
+        cols = ["clientenombre", "fechacomprobante", "cuentanombre"]
         df = df_facturacion_full[cols].copy()
         df = df[df["cuentanombre"].astype("string").str.startswith("Ventas Merc", na=False)]
-        df = df.sort_values(["clientecodigo", "fechacomprobante"])
+        df = df.sort_values(["clientenombre", "fechacomprobante"])
 
     df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"], errors="coerce")
     df = df.dropna(subset=["fechacomprobante"])
 
+    # Aplicar agrupación
+    mapa_clientes = mapa_clientes or {}
+    df = aplicar_agrupacion_cliente(df, mapa_clientes, source_col="clientenombre", target_col="cliente_agrupado")
+
     print(f"Datos churn cargados: {len(df)} registros (solo ventas 'Ventas Merc')")
     if len(df) > 0:
         print(f"Rango de fechas: {df['fechacomprobante'].min()} a {df['fechacomprobante'].max()}")
-        print(f"Total de clientes únicos: {df['clientecodigo'].nunique()}")
+        print(f"Total de clientes agrupados únicos: {df['cliente_agrupado'].nunique()}")
     return df
 
-def obtener_ultima_compra_hasta_fecha(df, cliente, fecha_fin):
-    compras_cliente = df[(df["clientecodigo"] == cliente) & (df["fechacomprobante"] <= fecha_fin)]
+def obtener_ultima_compra_hasta_fecha(df, cliente_agrupado, fecha_fin):
+    compras_cliente = df[(df["cliente_agrupado"] == cliente_agrupado) & (df["fechacomprobante"] <= fecha_fin)]
     if len(compras_cliente) == 0:
         return None
     return compras_cliente["fechacomprobante"].max()
@@ -221,7 +346,7 @@ def calcular_meses_desde_fecha(fecha_inicio, fecha_fin):
     delta = relativedelta(fecha_fin, fecha_inicio)
     return delta.years * 12 + delta.months
 
-def calcular_status_mensual(df, cliente, primera_compra, mes_inicio, mes_fin, status_mes_anterior):
+def calcular_status_mensual(df, cliente_agrupado, primera_compra, mes_inicio, mes_fin, status_mes_anterior):
     """
     Lógica de churn:
     Si un cliente no compra durante 3 meses seguidos (<=3 meses),
@@ -230,7 +355,7 @@ def calcular_status_mensual(df, cliente, primera_compra, mes_inicio, mes_fin, st
     if pd.isna(primera_compra):
         return None
 
-    ultima_compra_hasta_mes = obtener_ultima_compra_hasta_fecha(df, cliente, mes_fin)
+    ultima_compra_hasta_mes = obtener_ultima_compra_hasta_fecha(df, cliente_agrupado, mes_fin)
 
     if primera_compra >= mes_inicio and primera_compra <= mes_fin:
         return "Nuevo"
@@ -260,7 +385,7 @@ def calcular_status_mensual(df, cliente, primera_compra, mes_inicio, mes_fin, st
     tiene_compra_actual = ultima_compra_hasta_mes >= mes_inicio
 
     if tiene_compra_actual:
-        ultima_compra_antes = obtener_ultima_compra_hasta_fecha(df, cliente, mes_inicio - timedelta(days=1))
+        ultima_compra_antes = obtener_ultima_compra_hasta_fecha(df, cliente_agrupado, mes_inicio - timedelta(days=1))
 
         if ultima_compra_antes is not None:
             meses_sin_compra = calcular_meses_desde_fecha(ultima_compra_antes, mes_inicio)
@@ -325,25 +450,25 @@ def generar_fechas_mensuales(df):
     return fechas
 
 def crear_matriz_churn(df):
-    clientes = df[["clientecodigo", "clientenombre"]].drop_duplicates()
+    # Cliente agrupado como unidad de análisis
+    clientes = df[["cliente_agrupado"]].drop_duplicates()
     fechas_mensuales = generar_fechas_mensuales(df)
 
     print(f"Períodos a procesar: {len(fechas_mensuales)} meses")
 
-    primera_compra_df = df.groupby("clientecodigo")["fechacomprobante"].min().reset_index()
-    primera_compra_df.columns = ["clientecodigo", "primera_compra"]
-    primera_compra_dict = dict(zip(primera_compra_df["clientecodigo"], primera_compra_df["primera_compra"]))
+    primera_compra_df = df.groupby("cliente_agrupado")["fechacomprobante"].min().reset_index()
+    primera_compra_df.columns = ["cliente_agrupado", "primera_compra"]
+    primera_compra_dict = dict(zip(primera_compra_df["cliente_agrupado"], primera_compra_df["primera_compra"]))
 
     resultados = []
     total_clientes = len(clientes)
 
     for idx, (_, cliente_row) in enumerate(clientes.iterrows(), 1):
-        cliente = cliente_row["clientecodigo"]
-        cliente_nombre = cliente_row["clientenombre"]
-        primera_compra = primera_compra_dict.get(cliente)
+        cliente_agrupado = cliente_row["cliente_agrupado"]
+        primera_compra = primera_compra_dict.get(cliente_agrupado)
 
         if idx % 100 == 0:
-            print(f"Procesando cliente {idx}/{total_clientes}...")
+            print(f"Procesando cliente agrupado {idx}/{total_clientes}...")
 
         status_mes_anterior = None
 
@@ -351,14 +476,14 @@ def crear_matriz_churn(df):
             if primera_compra is not None and mes_fin < primera_compra.replace(day=1):
                 continue
 
-            status = calcular_status_mensual(df, cliente, primera_compra, mes_inicio, mes_fin, status_mes_anterior)
+            status = calcular_status_mensual(df, cliente_agrupado, primera_compra, mes_inicio, mes_fin, status_mes_anterior)
 
             if status is not None:
                 mes_str = mes_inicio.strftime("%Y-%m")
                 resultados.append(
                     {
-                        "ClienteCodigo": cliente,
-                        "ClienteNombre": cliente_nombre,
+                        "Cliente Agrupado": cliente_agrupado,
+                        "ClienteNombre": cliente_agrupado,  # columna “compatibilidad” (antes había Nombre)
                         "Mes": mes_str,
                         "Status": status,
                     }
@@ -369,7 +494,7 @@ def crear_matriz_churn(df):
     return pd.DataFrame(resultados)
 
 # ------------------------------------------------------------------------------
-# ✅ RFM (NUEVO) - Reutiliza df_facturacion_full (misma extracción)
+# ✅ RFM (AGRUPADO POR CLIENTE AGRUPADO + USD + M promedio mensual)
 # ------------------------------------------------------------------------------
 def qscore(series: pd.Series, q: int = 5, reverse: bool = False) -> pd.Series:
     s = pd.to_numeric(series, errors="coerce")
@@ -380,25 +505,37 @@ def qscore(series: pd.Series, q: int = 5, reverse: bool = False) -> pd.Series:
     else:
         ranked = s.rank(method="first", ascending=True)
         raw = pd.qcut(ranked, q=q_eff, labels=False) + 1  # 1..q_eff
-        # Reescala a 1..q si q_eff < q
         scores = np.ceil(raw.astype(float) * q / q_eff).astype(int)
 
     return (q + 1) - scores if reverse else scores
 
-def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, cuenta_keyword: str = "venta") -> pd.DataFrame:
+def calcular_rfm(
+    df_facturacion_full: pd.DataFrame,
+    mapa_clientes: dict,
+    usd_tc_ars_por_usd: float,
+    scoring_quantiles: int = 5,
+    cuenta_keyword: str = "venta"
+) -> pd.DataFrame:
     """
-    Reglas solicitadas:
+    Reglas:
+    - Agrupa por Cliente Agrupado (AUX_Agrup_Clientes)
     - Solo líneas con cuentanombre contiene 'Venta' (case-insensitive)
     - Excluir líneas con importemonedaprincipal < 0 (notas de crédito)
-    - No usa empresacodigo para agrupar
+    - Monetary total expresado en USD (ARS / TC)
+    - M_score calculado con M_promedio mensual = M_total_usd / frequency
+    - frequency = cantidad de meses con compra (no cantidad de facturas)
     """
+
     required = [
-        "clientecodigo", "clientenombre", "fechacomprobante",
+        "clientenombre", "fechacomprobante",
         "comprobantenumero", "cuentanombre", "importemonedaprincipal"
     ]
     missing = [c for c in required if c not in df_facturacion_full.columns]
     if missing:
         raise ValueError(f"Faltan columnas para RFM en df_facturacion_full: {missing}")
+
+    if usd_tc_ars_por_usd is None or usd_tc_ars_por_usd <= 0:
+        raise ValueError("usd_tc_ars_por_usd inválido (debe ser > 0).")
 
     df = df_facturacion_full[required].copy()
 
@@ -406,7 +543,7 @@ def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, 
     df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"], errors="coerce")
     df = df.dropna(subset=["fechacomprobante"])
 
-    # Monto numérico
+    # Monto numérico (ARS en moneda principal)
     df["importemonedaprincipal"] = pd.to_numeric(df["importemonedaprincipal"], errors="coerce")
     df = df.dropna(subset=["importemonedaprincipal"])
 
@@ -419,43 +556,59 @@ def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, 
 
     if len(df) == 0:
         return pd.DataFrame(columns=[
-            "clientecodigo", "clientenombre", "last_purchase", "recency_days",
-            "frequency", "monetary", "R_score", "F_score", "M_score", "RFM", "RFM_sum", "segment"
+            "cliente_agrupado", "clientenombre", "last_purchase", "recency_days",
+            "frequency", "monetary_total_usd", "monetary_avg_usd",
+            "R_score", "F_score", "M_score", "RFM", "RFM_sum", "segment"
         ])
 
-    # Consolidación a nivel transacción: cliente + fecha + comprobante (rellenando nulos)
+    # Aplicar agrupación
+    df = aplicar_agrupacion_cliente(df, mapa_clientes or {}, source_col="clientenombre", target_col="cliente_agrupado")
+
+    # Consolidación a nivel transacción: cliente_agrupado + fecha + comprobante (rellenando nulos)
     df["_doc_filled"] = df["comprobantenumero"].astype("string")
     m = df["_doc_filled"].isna()
     df.loc[m, "_doc_filled"] = "SIN_COMPROBANTE_" + df.index[m].astype(str)
 
     tx = (
-        df.groupby(["clientecodigo", "fechacomprobante", "_doc_filled"], as_index=False)
+        df.groupby(["cliente_agrupado", "fechacomprobante", "_doc_filled"], as_index=False)
           .agg(
-              clientenombre=("clientenombre", "first"),
-              tx_amount=("importemonedaprincipal", "sum")
+              tx_amount_ars=("importemonedaprincipal", "sum")
           )
           .rename(columns={"fechacomprobante": "fecha", "_doc_filled": "comprobante"})
     )
 
+    # Monetary en USD
+    tx["tx_amount_usd"] = tx["tx_amount_ars"] / float(usd_tc_ars_por_usd)
+
+    # Mes (para frequency mensual)
+    tx["mes"] = tx["fecha"].dt.to_period("M").astype(str)
+
     # Fecha de referencia
     as_of_date = tx["fecha"].max() + pd.Timedelta(days=1)
 
+    # Agregado por cliente agrupado
     rfm = (
-        tx.groupby(["clientecodigo"], as_index=False)
+        tx.groupby(["cliente_agrupado"], as_index=False)
           .agg(
-              clientenombre=("clientenombre", "first"),
               last_purchase=("fecha", "max"),
-              frequency=("comprobante", "nunique"),
-              monetary=("tx_amount", "sum"),
+              frequency=("mes", "nunique"),                # meses con compra
+              monetary_total_usd=("tx_amount_usd", "sum"), # total histórico en USD
           )
     )
 
     rfm["recency_days"] = (as_of_date - rfm["last_purchase"]).dt.days
 
+    # M_promedio mensual
+    rfm["monetary_avg_usd"] = np.where(
+        rfm["frequency"] > 0,
+        rfm["monetary_total_usd"] / rfm["frequency"],
+        0.0
+    )
+
     q = int(scoring_quantiles)
     rfm["R_score"] = qscore(rfm["recency_days"], q=q, reverse=True)
     rfm["F_score"] = qscore(rfm["frequency"], q=q, reverse=False)
-    rfm["M_score"] = qscore(rfm["monetary"], q=q, reverse=False)
+    rfm["M_score"] = qscore(rfm["monetary_avg_usd"], q=q, reverse=False)
 
     rfm["RFM"] = rfm["R_score"].astype(str) + rfm["F_score"].astype(str) + rfm["M_score"].astype(str)
     rfm["RFM_sum"] = rfm[["R_score", "F_score", "M_score"]].sum(axis=1)
@@ -463,7 +616,7 @@ def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, 
     def rfm_segment(row) -> str:
         R, F, M = row["R_score"], row["F_score"], row["M_score"]
         if (R >= 4) and (F >= 4) and (M >= 4):
-            return "Champions"
+            return "Campeones"
         if (R >= 4) and (F >= 3):
             return "Leales"
         if (R == 5) and (F == 1):
@@ -482,8 +635,30 @@ def calcular_rfm(df_facturacion_full: pd.DataFrame, scoring_quantiles: int = 5, 
 
     rfm["segment"] = rfm.apply(rfm_segment, axis=1)
 
+    # Columna clientenombre (compatibilidad): mismo valor que cliente_agrupado
+    rfm["clientenombre"] = rfm["cliente_agrupado"]
+
     # Orden sugerido
     rfm = rfm.sort_values(["segment", "RFM_sum"], ascending=[True, False])
+
+    # Reorden final para export: 13 columnas (A:M) y preserva formulas desde N en adelante
+    rfm = rfm[
+        [
+            "cliente_agrupado",     # A (nuevo)
+            "clientenombre",        # B (compatibilidad / display)
+            "last_purchase",        # C
+            "recency_days",         # D
+            "frequency",            # E
+            "monetary_total_usd",   # F
+            "monetary_avg_usd",     # G
+            "R_score",              # H
+            "F_score",              # I
+            "M_score",              # J
+            "RFM",                  # K
+            "RFM_sum",              # L
+            "segment",              # M
+        ]
+    ].copy()
 
     return rfm
 
@@ -522,7 +697,6 @@ select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
 # ------------------------------------------------------------------------------
 SPREADSHEET_SALDOS_URL = os.environ.get(
     "SPREADSHEET_SALDOS_URL",
-    # Default apuntando al sheet que indicaste (puedes seguir sobreescribiendo por env var si ya lo usas)
     "https://docs.google.com/spreadsheets/d/1oR_fdVCyn1cA8zwH4XgU5VK63cZaDC3I1i3-SWaUT20/edit"
 )
 SPREADSHEET_LIBRO_MAYOR_URL = os.environ.get(
@@ -538,6 +712,9 @@ SPREADSHEET_STOCK_PUC_URL = os.environ.get(
 # 📁 Spreadsheet 1
 # ------------------------------------------------------------------------------
 saldos_sheet = client.open_by_url(SPREADSHEET_SALDOS_URL)
+
+# 0) Cargar mapeo de clientes agrupados (impacta churn + RFM)
+mapa_clientes_agrupados = obtener_mapa_clientes_agrupados(saldos_sheet, sheet_name="AUX_Agrup_Clientes")
 
 # 1. Saldos clientes filtrados
 exportar_tabla_completa(
@@ -572,13 +749,13 @@ exportar_tabla_completa(
     ["cantidadpendiente"]
 )
 
-# 5. Facturación (OPT: se lee 1 vez y se reutiliza para churn y RFM)
+# 5. Facturación
 print("\nCargando facturación completa desde DW...")
 df_facturacion_full = pd.read_sql("SELECT * FROM public.inpro2021nube_facturacion", engine)
 print(f"Facturación total cargada: {len(df_facturacion_full)} filas")
 
 exportar_tabla_completa(
-    df_facturacion_full,  # reutiliza DF (evita re-query)
+    df_facturacion_full,
     saldos_sheet,
     "Base Facturacion",
     [
@@ -592,13 +769,16 @@ exportar_tabla_completa(
 )
 
 # ------------------------------------------------------------------------------
-# ✅ Análisis de churn y exportación
-#    Mantiene el comportamiento original de limpiar solo A:D en "Analisis_Churn" :contentReference[oaicite:4]{index=4}
+# ✅ Análisis de churn (agrupado) y exportación
 # ------------------------------------------------------------------------------
 print("\nEjecutando análisis de churn...")
-df_facturacion_churn = obtener_datos_facturacion(df_facturacion_full=df_facturacion_full)
+df_facturacion_churn = obtener_datos_facturacion(
+    df_facturacion_full=df_facturacion_full,
+    mapa_clientes=mapa_clientes_agrupados
+)
 matriz_churn = crear_matriz_churn(df_facturacion_churn)
 
+# Mantengo el rango A:D para no afectar columnas posteriores del sheet
 exportar_tabla_completa(
     matriz_churn,
     saldos_sheet,
@@ -608,35 +788,28 @@ exportar_tabla_completa(
 )
 
 # ------------------------------------------------------------------------------
-# ✅ RFM (NUEVO) - output a hoja "RFM" en el mismo spreadsheet
+# ✅ RFM (agrupado + USD + M promedio mensual) y exportación preservando fórmulas
 # ------------------------------------------------------------------------------
 print("\nCalculando RFM...")
-df_rfm = calcular_rfm(df_facturacion_full=df_facturacion_full, scoring_quantiles=5, cuenta_keyword="venta")
-print(f"RFM generado: {len(df_rfm)} clientes")
+usd_tc = obtener_tc_usd_desde_aux(saldos_sheet, sheet_name="AUX", range_name="A:B")
+print(f"Tipo de cambio (ARS/USD) tomado de AUX: {usd_tc}")
 
-# Asegurar orden y que sean solo 12 columnas (A-L)
-rfm_cols = [
-    "clientecodigo",
-    "clientenombre",
-    "last_purchase",
-    "recency_days",
-    "frequency",
-    "monetary",
-    "R_score",
-    "F_score",
-    "M_score",
-    "RFM",
-    "RFM_sum",
-    "segment",
-]
-df_rfm = df_rfm[rfm_cols].copy()
+df_rfm = calcular_rfm(
+    df_facturacion_full=df_facturacion_full,
+    mapa_clientes=mapa_clientes_agrupados,
+    usd_tc_ars_por_usd=usd_tc,
+    scoring_quantiles=5,
+    cuenta_keyword="venta"
+)
+print(f"RFM generado: {len(df_rfm)} clientes agrupados")
 
+# Export: limpiar solo A:M para NO borrar fórmulas desde N en adelante
 exportar_tabla_completa(
     df_rfm,
     saldos_sheet,
     "RFM",
     columnas_decimal=[],
-    clear_range="A:L",          # <-- clave: NO borrar toda la hoja
+    clear_range="A:M",
     create_if_missing=True
 )
 
