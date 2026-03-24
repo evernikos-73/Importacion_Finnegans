@@ -634,33 +634,37 @@ select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
 # ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción)
 QUERY_CONTROL_MRP = """
 WITH BasePartes AS (
+    -- 1. Aislamos las partes válidas y limpiamos la cantidadparteprod a número
     SELECT 
         ordendeproduccion,
         productoparteprod,
-        cantidadparteprod,
+        NULLIF(NULLIF(TRIM(cantidadparteprod::text), ''), 'NULL')::numeric AS cantidadparteprod,
         numerocomprobante,
         fecha
     FROM public.analisis_de_partes_de_produccion
     WHERE fecha::timestamp >= '2026-01-01'
       AND ordendeproduccion IS NOT NULL 
       AND TRIM(ordendeproduccion::text) <> ''
-      AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
+      AND LOWER(productoparteprod::text) NOT LIKE '%scrap%'
 ),
 ProduccionMensual AS (
+    -- 2. Calculamos el total producido en el mes para el divisor de absorción
     SELECT 
         DATE_TRUNC('month', fecha::timestamp) AS mes_produccion, 
         productoparteprod, 
-        SUM(NULLIF(NULLIF(TRIM(cantidadparteprod::text), ''), 'NULL')::numeric) AS total_cantidad_mes
+        SUM(cantidadparteprod) AS total_cantidad_mes
     FROM BasePartes
     GROUP BY DATE_TRUNC('month', fecha::timestamp), productoparteprod
 ),
 Combinaciones AS (
+    -- 3. Obtenemos combinaciones únicas y AHORA arrastramos la cantidadparteprod
     SELECT DISTINCT
         DATE_TRUNC('month', p.fecha::timestamp) AS mes_produccion,
         p.productoparteprod::text AS productoparteprod,
         c.ordendeproduccion::text AS ordendeproduccion,
         p.numerocomprobante::text AS numerocomprobante_parte,
-        c.numerocomprobante::text AS numerocomprobante_consumo
+        c.numerocomprobante::text AS numerocomprobante_consumo,
+        p.cantidadparteprod
     FROM public.analisis_de_consumos_de_produccion c
     INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
     WHERE c.fecha::timestamp >= '2026-01-01'
@@ -668,11 +672,13 @@ Combinaciones AS (
       AND TRIM(c.ordendeproduccion::text) <> ''
 ),
 AbsorcionCalculada AS (
+    -- 4. Pre-calculamos el valor agrupado de la absorción y traemos el Total Producido
     SELECT 
         a.fecha::timestamp AS fecha_absorcion,
         a.producto::text AS producto,
         a.cuentacontable::text AS cuentacontable,
-        (SUM(NULLIF(NULLIF(TRIM(a.importepesos::text), ''), 'NULL')::numeric) / NULLIF(pm.total_cantidad_mes, 0))::numeric AS importe_absorcion
+        (SUM(NULLIF(NULLIF(TRIM(a.importepesos::text), ''), 'NULL')::numeric) / NULLIF(pm.total_cantidad_mes, 0))::numeric AS importe_absorcion,
+        pm.total_cantidad_mes
     FROM public.inpro2021nube_informe_absorcion_costos a
     INNER JOIN ProduccionMensual pm 
         ON a.producto = pm.productoparteprod 
@@ -680,6 +686,10 @@ AbsorcionCalculada AS (
     WHERE a.fecha::timestamp >= '2026-01-01'
     GROUP BY a.fecha::timestamp, a.producto, a.cuentacontable, pm.total_cantidad_mes
 )
+
+-- ==========================================
+-- PARTE 1: Cruce de Consumos y Partes
+-- ==========================================
 SELECT 
     c.fecha::timestamp AS fecha, 
     c.productoconsumoprod::text AS "Producto Consumido", 
@@ -687,21 +697,29 @@ SELECT
     c.unidadconsumoprod::text AS unidadconsumoprod, 
     NULLIF(NULLIF(TRIM(c.preciounitvalorizadoconsumoprod::text), ''), 'NULL')::numeric AS preciounitvalorizadoconsumoprod, 
     NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric AS importevalorizadoconsumoprod, 
-    (NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric / NULLIF(NULLIF(NULLIF(TRIM(p.cantidadparteprod::text), ''), 'NULL')::numeric, 0))::numeric AS Importe,
+    (NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric / NULLIF(p.cantidadparteprod, 0))::numeric AS Importe,
     c.monedavalorizacionconsumoprod::text AS monedavalorizacionconsumoprod, 
-    NULLIF(NULLIF(TRIM(p.cantidadparteprod::text), ''), 'NULL')::numeric AS cantidadparteprod, 
+    p.cantidadparteprod AS cantidadparteprod, 
     p.productoparteprod::text AS productoparteprod, 
     c.ordendeproduccion::text AS ordendeproduccion,
     p.numerocomprobante::text AS numerocomprobante_parte,
-    c.numerocomprobante::text AS numerocomprobante_consumo
+    c.numerocomprobante::text AS numerocomprobante_consumo,
+    pm.total_cantidad_mes::numeric AS "Total Producido" -- <--- NUEVA COLUMNA
 FROM public.analisis_de_consumos_de_produccion c
 INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
+-- Agregamos el join para tener el Total Producido a nivel fila
+LEFT JOIN ProduccionMensual pm 
+    ON p.productoparteprod = pm.productoparteprod 
+    AND DATE_TRUNC('month', p.fecha::timestamp) = pm.mes_produccion
 WHERE c.fecha::timestamp >= '2026-01-01'
   AND c.ordendeproduccion IS NOT NULL 
   AND TRIM(c.ordendeproduccion::text) <> ''
 
 UNION ALL
 
+-- ==========================================
+-- PARTE 2: Absorción multiplicada por combinaciones
+-- ==========================================
 SELECT 
     ac.fecha_absorcion AS fecha, 
     ac.cuentacontable::text AS "Producto Consumido", 
@@ -711,11 +729,12 @@ SELECT
     NULL::numeric AS importevalorizadoconsumoprod, 
     ac.importe_absorcion AS Importe, 
     'Pesos'::text AS monedavalorizacionconsumoprod, 
-    NULL::numeric AS cantidadparteprod, 
+    comb.cantidadparteprod AS cantidadparteprod, -- <--- AHORA TRAE EL VALOR CORRECTO
     ac.producto AS productoparteprod, 
     comb.ordendeproduccion AS ordendeproduccion,
     comb.numerocomprobante_parte AS numerocomprobante_parte,
-    comb.numerocomprobante_consumo AS numerocomprobante_consumo
+    comb.numerocomprobante_consumo AS numerocomprobante_consumo,
+    ac.total_cantidad_mes::numeric AS "Total Producido" -- <--- NUEVA COLUMNA
 FROM AbsorcionCalculada ac
 INNER JOIN Combinaciones comb 
     ON ac.producto = comb.productoparteprod 
