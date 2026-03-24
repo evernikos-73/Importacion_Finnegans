@@ -645,7 +645,7 @@ WITH BasePartes AS (
     WHERE fecha::timestamp >= '2026-01-01'
       AND ordendeproduccion IS NOT NULL 
       AND TRIM(ordendeproduccion::text) <> ''
-      AND LOWER(productoparteprod::text) NOT LIKE '%scrap%'
+      AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
 ),
 ProduccionMensual AS (
     -- 2. Calculamos el total producido en el mes para el divisor de absorción
@@ -704,10 +704,9 @@ SELECT
     c.ordendeproduccion::text AS ordendeproduccion,
     p.numerocomprobante::text AS numerocomprobante_parte,
     c.numerocomprobante::text AS numerocomprobante_consumo,
-    pm.total_cantidad_mes::numeric AS "Total Producido" -- <--- NUEVA COLUMNA
+    pm.total_cantidad_mes::numeric AS "Total Producido" 
 FROM public.analisis_de_consumos_de_produccion c
 INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
--- Agregamos el join para tener el Total Producido a nivel fila
 LEFT JOIN ProduccionMensual pm 
     ON p.productoparteprod = pm.productoparteprod 
     AND DATE_TRUNC('month', p.fecha::timestamp) = pm.mes_produccion
@@ -729,12 +728,12 @@ SELECT
     NULL::numeric AS importevalorizadoconsumoprod, 
     ac.importe_absorcion AS Importe, 
     'Pesos'::text AS monedavalorizacionconsumoprod, 
-    comb.cantidadparteprod AS cantidadparteprod, -- <--- AHORA TRAE EL VALOR CORRECTO
+    comb.cantidadparteprod AS cantidadparteprod, 
     ac.producto AS productoparteprod, 
     comb.ordendeproduccion AS ordendeproduccion,
     comb.numerocomprobante_parte AS numerocomprobante_parte,
     comb.numerocomprobante_consumo AS numerocomprobante_consumo,
-    ac.total_cantidad_mes::numeric AS "Total Producido" -- <--- NUEVA COLUMNA
+    ac.total_cantidad_mes::numeric AS "Total Producido" 
 FROM AbsorcionCalculada ac
 INNER JOIN Combinaciones comb 
     ON ac.producto = comb.productoparteprod 
