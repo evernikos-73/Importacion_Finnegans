@@ -183,12 +183,6 @@ def norm_name(x) -> str:
     return s
 
 def obtener_mapa_clientes_agrupados(spreadsheet, sheet_name="AUX_Agrup_Clientes") -> dict:
-    """
-    Hoja AUX_Agrup_Clientes:
-      - Col A: clientenombre (razón social)
-      - Col B: Cliente Agrupado (grupo económico)
-    Devuelve dict: { norm(clientenombre) -> Cliente Agrupado }.
-    """
     try:
         ws = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
@@ -286,10 +280,6 @@ def obtener_tc_usd_desde_aux(spreadsheet, sheet_name="AUX", range_name="A:B") ->
 # Funciones para análisis de churn (AGRUPADO POR CLIENTE AGRUPADO)
 # ------------------------------------------------------------------------------
 def obtener_datos_facturacion(df_facturacion_full=None, mapa_clientes=None):
-    """
-    Mantiene la lógica original: solo ventas donde cuentanombre comience con 'Ventas Merc'
-    NUEVO: se agrega cliente_agrupado aplicando AUX_Agrup_Clientes.
-    """
     if df_facturacion_full is None:
         query = """
 SELECT
@@ -472,7 +462,6 @@ def crear_matriz_churn(df):
 
 # ------------------------------------------------------------------------------
 # ✅ RFM (AGRUPADO POR CLIENTE AGRUPADO + USD + M promedio mensual)
-# + NUEVO: Monto última compra en moneda principal (ARS) sin conversión
 # ------------------------------------------------------------------------------
 def qscore(series: pd.Series, q: int = 5, reverse: bool = False) -> pd.Series:
     s = pd.to_numeric(series, errors="coerce")
@@ -532,24 +521,17 @@ def calcular_rfm(
     m = df["_doc_filled"].isna()
     df.loc[m, "_doc_filled"] = "SIN_COMPROBANTE_" + df.index[m].astype(str)
 
-    # Transacciones: cliente_agrupado + fecha + comprobante
     tx = (
         df.groupby(["cliente_agrupado", "fechacomprobante", "_doc_filled"], as_index=False)
-          .agg(
-              tx_amount_ars=("importemonedaprincipal", "sum")
-          )
+          .agg(tx_amount_ars=("importemonedaprincipal", "sum"))
           .rename(columns={"fechacomprobante": "fecha", "_doc_filled": "comprobante"})
     )
 
-    # Monto en USD
     tx["tx_amount_usd"] = tx["tx_amount_ars"] / float(usd_tc_ars_por_usd)
-
-    # Mes para frequency mensual
     tx["mes"] = tx["fecha"].dt.to_period("M").astype(str)
 
     as_of_date = tx["fecha"].max() + pd.Timedelta(days=1)
 
-    # Base RFM por cliente_agrupado
     rfm = (
         tx.groupby(["cliente_agrupado"], as_index=False)
           .agg(
@@ -566,8 +548,6 @@ def calcular_rfm(
         0.0
     )
 
-    # ✅ NUEVO: monto de la última compra en ARS (moneda principal, sin conversión)
-    # Se suma todo lo comprado en la fecha de última compra (por si hubo más de un comprobante ese día).
     tx_day_sum = (
         tx.groupby(["cliente_agrupado", "fecha"], as_index=False)
           .agg(last_purchase_amount_ars=("tx_amount_ars", "sum"))
@@ -609,31 +589,14 @@ def calcular_rfm(
         return "Otros"
 
     rfm["segment"] = rfm.apply(rfm_segment, axis=1)
-
-    # Compatibilidad/display
     rfm["clientenombre"] = rfm["cliente_agrupado"]
-
     rfm = rfm.sort_values(["segment", "RFM_sum"], ascending=[True, False])
 
-    # Export A:N (14 columnas): desde O en adelante quedan fórmulas intactas
-    rfm = rfm[
-        [
-            "cliente_agrupado",        # A
-            "clientenombre",           # B
-            "last_purchase",           # C
-            "recency_days",            # D
-            "frequency",               # E
-            "monetary_total_usd",      # F
-            "monetary_avg_usd",        # G
-            "R_score",                 # H
-            "F_score",                 # I
-            "M_score",                 # J
-            "RFM",                     # K
-            "RFM_sum",                 # L
-            "segment",                 # M
-            "last_purchase_amount_ars" # N  ✅ nuevo
-        ]
-    ].copy()
+    rfm = rfm[[
+        "cliente_agrupado", "clientenombre", "last_purchase", "recency_days",
+        "frequency", "monetary_total_usd", "monetary_avg_usd", "R_score",
+        "F_score", "M_score", "RFM", "RFM_sum", "segment", "last_purchase_amount_ars"
+    ]].copy()
 
     return rfm
 
@@ -643,7 +606,8 @@ def calcular_rfm(
 QUERY_SALDOS_CLIENTES_FILTRADOS = """
 SELECT * FROM public.inpro2021nube_composicion_saldos_clientes_inprocil c
 WHERE
-    c.empresanombre = 'INPROCIL S.A.' AND
+    c.empresanombre = 'INPROCIL S.A.'
+AND
     c.cuentacontablecodigo IN ('ANT101', 'AAP301', 'DML101') AND
     c.clientenombre not like '%%BENVENUTO%%'  AND
     c.clientenombre not like '%%CONCEPCION%%' AND
@@ -665,6 +629,97 @@ WHERE
 
 QUERY_SALDOS_PROVEEDORES_FILTRADOS = """
 select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
+"""
+
+# ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción)
+QUERY_CONTROL_MRP = """
+WITH BasePartes AS (
+    SELECT 
+        ordendeproduccion,
+        productoparteprod,
+        cantidadparteprod,
+        numerocomprobante,
+        fecha
+    FROM public.analisis_de_partes_de_produccion
+    WHERE fecha::timestamp >= '2026-01-01'
+      AND ordendeproduccion IS NOT NULL 
+      AND TRIM(ordendeproduccion::text) <> ''
+      AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
+),
+ProduccionMensual AS (
+    SELECT 
+        DATE_TRUNC('month', fecha::timestamp) AS mes_produccion, 
+        productoparteprod, 
+        SUM(NULLIF(NULLIF(TRIM(cantidadparteprod::text), ''), 'NULL')::numeric) AS total_cantidad_mes
+    FROM BasePartes
+    GROUP BY DATE_TRUNC('month', fecha::timestamp), productoparteprod
+),
+Combinaciones AS (
+    SELECT DISTINCT
+        DATE_TRUNC('month', p.fecha::timestamp) AS mes_produccion,
+        p.productoparteprod::text AS productoparteprod,
+        c.ordendeproduccion::text AS ordendeproduccion,
+        p.numerocomprobante::text AS numerocomprobante_parte,
+        c.numerocomprobante::text AS numerocomprobante_consumo
+    FROM public.analisis_de_consumos_de_produccion c
+    INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
+    WHERE c.fecha::timestamp >= '2026-01-01'
+      AND c.ordendeproduccion IS NOT NULL 
+      AND TRIM(c.ordendeproduccion::text) <> ''
+),
+AbsorcionCalculada AS (
+    SELECT 
+        a.fecha::timestamp AS fecha_absorcion,
+        a.producto::text AS producto,
+        a.cuentacontable::text AS cuentacontable,
+        (SUM(NULLIF(NULLIF(TRIM(a.importepesos::text), ''), 'NULL')::numeric) / NULLIF(pm.total_cantidad_mes, 0))::numeric AS importe_absorcion
+    FROM public.inpro2021nube_informe_absorcion_costos a
+    INNER JOIN ProduccionMensual pm 
+        ON a.producto = pm.productoparteprod 
+        AND DATE_TRUNC('month', a.fecha::timestamp) = pm.mes_produccion
+    WHERE a.fecha::timestamp >= '2026-01-01'
+    GROUP BY a.fecha::timestamp, a.producto, a.cuentacontable, pm.total_cantidad_mes
+)
+SELECT 
+    c.fecha::timestamp AS fecha, 
+    c.productoconsumoprod::text AS "Producto Consumido", 
+    NULLIF(NULLIF(TRIM(c.cantidadconsumoprod::text), ''), 'NULL')::numeric AS cantidadconsumoprod, 
+    c.unidadconsumoprod::text AS unidadconsumoprod, 
+    NULLIF(NULLIF(TRIM(c.preciounitvalorizadoconsumoprod::text), ''), 'NULL')::numeric AS preciounitvalorizadoconsumoprod, 
+    NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric AS importevalorizadoconsumoprod, 
+    (NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric / NULLIF(NULLIF(NULLIF(TRIM(p.cantidadparteprod::text), ''), 'NULL')::numeric, 0))::numeric AS Importe,
+    c.monedavalorizacionconsumoprod::text AS monedavalorizacionconsumoprod, 
+    NULLIF(NULLIF(TRIM(p.cantidadparteprod::text), ''), 'NULL')::numeric AS cantidadparteprod, 
+    p.productoparteprod::text AS productoparteprod, 
+    c.ordendeproduccion::text AS ordendeproduccion,
+    p.numerocomprobante::text AS numerocomprobante_parte,
+    c.numerocomprobante::text AS numerocomprobante_consumo
+FROM public.analisis_de_consumos_de_produccion c
+INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
+WHERE c.fecha::timestamp >= '2026-01-01'
+  AND c.ordendeproduccion IS NOT NULL 
+  AND TRIM(c.ordendeproduccion::text) <> ''
+
+UNION ALL
+
+SELECT 
+    ac.fecha_absorcion AS fecha, 
+    ac.cuentacontable::text AS "Producto Consumido", 
+    NULL::numeric AS cantidadconsumoprod, 
+    NULL::text AS unidadconsumoprod, 
+    NULL::numeric AS preciounitvalorizadoconsumoprod, 
+    NULL::numeric AS importevalorizadoconsumoprod, 
+    ac.importe_absorcion AS Importe, 
+    'Pesos'::text AS monedavalorizacionconsumoprod, 
+    NULL::numeric AS cantidadparteprod, 
+    ac.producto AS productoparteprod, 
+    comb.ordendeproduccion AS ordendeproduccion,
+    comb.numerocomprobante_parte AS numerocomprobante_parte,
+    comb.numerocomprobante_consumo AS numerocomprobante_consumo
+FROM AbsorcionCalculada ac
+INNER JOIN Combinaciones comb 
+    ON ac.producto = comb.productoparteprod 
+    AND DATE_TRUNC('month', ac.fecha_absorcion) = comb.mes_produccion;
 """
 
 # ------------------------------------------------------------------------------
@@ -742,6 +797,23 @@ exportar_tabla_completa(
         "cantidad",
     ],
 )
+
+# 6. ✅ NUEVO: Análisis de Producción y Control MRP
+print("\nEjecutando exportación: Análisis Control MRP...")
+exportar_tabla_completa(
+    QUERY_CONTROL_MRP,
+    saldos_sheet,
+    "MRP",
+    columnas_decimal=[
+        "cantidadconsumoprod", 
+        "preciounitvalorizadoconsumoprod", 
+        "importevalorizadoconsumoprod", 
+        "Importe", 
+        "cantidadparteprod"
+    ],
+    create_if_missing=True
+)
+
 
 # ------------------------------------------------------------------------------
 # ✅ Análisis de churn (agrupado) y exportación
