@@ -660,7 +660,7 @@ Combinaciones AS (
     -- 3. Obtenemos combinaciones únicas, cantidadparteprod y la FECHA EXACTA de la orden
     SELECT DISTINCT
         DATE_TRUNC('month', p.fecha::timestamp) AS mes_produccion,
-        c.fecha::timestamp AS fecha_exacta, -- <--- NUEVO: Rescatamos la fecha de la orden
+        c.fecha::timestamp AS fecha_exacta,
         p.productoparteprod::text AS productoparteprod,
         c.ordendeproduccion::text AS ordendeproduccion,
         p.numerocomprobante::text AS numerocomprobante_parte,
@@ -721,12 +721,12 @@ UNION ALL
 -- PARTE 2: Absorción multiplicada por combinaciones
 -- ==========================================
 SELECT 
-    comb.fecha_exacta AS fecha, -- <--- NUEVO: Usamos la fecha real de la orden/consumo
+    comb.fecha_exacta AS fecha, 
     ac.cuentacontable::text AS "Producto Consumido", 
     NULL::numeric AS cantidadconsumoprod, 
     NULL::text AS unidadconsumoprod, 
     NULL::numeric AS preciounitvalorizadoconsumoprod, 
-    NULL::numeric AS importevalorizadoconsumoprod, 
+    (ac.importe_absorcion * comb.cantidadparteprod)::numeric AS importevalorizadoconsumoprod, -- <--- NUEVO CÁLCULO: Importe x cantidadparteprod
     ac.importe_absorcion AS Importe, 
     'Pesos'::text AS monedavalorizacionconsumoprod, 
     comb.cantidadparteprod AS cantidadparteprod, 
