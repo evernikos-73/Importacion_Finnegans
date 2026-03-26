@@ -713,7 +713,7 @@ SELECT
     CASE
         WHEN p.productoparteprod ILIKE '%%Corte%%' THEN 'Corte'
         WHEN p.productoparteprod ILIKE '%%Conformado%%' THEN 'Conformado'
-        WHEN p.productoparteprod ILIKE '%%Tratado%%' THEN 'Conformado'
+        WHEN p.productoparteprod ILIKE '%%Tratado%%' THEN 'Tratado'
         WHEN p.productoparteprod ILIKE '%%EXPANDIDO%%' THEN 'Expansion'
         ELSE 'Producto Terminado'
     END AS "Etapa Produccion",
