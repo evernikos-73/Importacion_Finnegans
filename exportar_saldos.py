@@ -646,7 +646,7 @@ WITH BasePartes AS (
       AND ordendeproduccion IS NOT NULL 
       AND TRIM(ordendeproduccion::text) <> ''
       AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
-      AND Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
+      AND Empresa LIKE '%%INPROCIL%%'
 ),
 ProduccionMensual AS (
     -- 2. Calculamos el total producido en el mes para el divisor de absorción
@@ -672,7 +672,7 @@ Combinaciones AS (
     WHERE c.fecha::timestamp >= '2026-01-01'
       AND c.ordendeproduccion IS NOT NULL 
       AND TRIM(c.ordendeproduccion::text) <> ''
-      AND c.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
+      AND c.Empresa LIKE '%%INPROCIL%%'
 ),
 AbsorcionCalculada AS (
     -- 4. Pre-calculamos el valor agrupado de la absorción y traemos el Total Producido
@@ -687,7 +687,7 @@ AbsorcionCalculada AS (
         ON a.producto = pm.productoparteprod 
         AND DATE_TRUNC('month', a.fecha::timestamp) = pm.mes_produccion
     WHERE a.fecha::timestamp >= '2026-01-01'
-      AND a.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
+      AND a.Empresa LIKE '%%INPROCIL%%'
     GROUP BY a.fecha::timestamp, a.producto, a.cuentacontable, pm.total_cantidad_mes
 )
 
@@ -708,7 +708,23 @@ SELECT
     c.ordendeproduccion::text AS ordendeproduccion,
     p.numerocomprobante::text AS numerocomprobante_parte,
     c.numerocomprobante::text AS numerocomprobante_consumo,
-    pm.total_cantidad_mes::numeric AS "Total Producido" 
+    pm.total_cantidad_mes::numeric AS "Total Producido",
+    -- NUEVA COLUMNA: Etapa de Producción (Parte 1)
+    CASE
+        WHEN p.productoparteprod ILIKE '%%Corte%%' THEN 'Corte'
+        WHEN p.productoparteprod ILIKE '%%Conformado%%' THEN 'Conformado'
+        WHEN p.productoparteprod ILIKE '%%Tratado%%' THEN 'Conformado'
+        WHEN p.productoparteprod ILIKE '%%EXPANDIDO%%' THEN 'Expansion'
+        ELSE 'Producto Terminado'
+    END AS "Etapa Produccion",
+    -- NUEVA COLUMNA: Categoría de Insumo (Parte 1)
+    CASE 
+        WHEN c.productoconsumoprod ~* 'hora hombre' THEN 'Personal'
+        WHEN c.productoconsumoprod ~* 'energia|energía' THEN 'Energia'
+        WHEN c.productoconsumoprod ~* 'cilindro|tubo' THEN 'Materia Prima'
+        WHEN c.productoconsumoprod ~* 'gas' THEN 'Gas'
+        ELSE 'Insumos de Producción'
+    END AS "Categoria Insumo Produccion"
 FROM public.analisis_de_consumos_de_produccion c
 INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
 LEFT JOIN ProduccionMensual pm 
@@ -717,7 +733,7 @@ LEFT JOIN ProduccionMensual pm
 WHERE c.fecha::timestamp >= '2026-01-01'
   AND c.ordendeproduccion IS NOT NULL 
   AND TRIM(c.ordendeproduccion::text) <> ''
-  AND c.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
+  AND c.Empresa LIKE '%%INPROCIL%%'
 
 UNION ALL
 
@@ -738,7 +754,23 @@ SELECT
     comb.ordendeproduccion AS ordendeproduccion,
     comb.numerocomprobante_parte AS numerocomprobante_parte,
     comb.numerocomprobante_consumo AS numerocomprobante_consumo,
-    ac.total_cantidad_mes::numeric AS "Total Producido" 
+    ac.total_cantidad_mes::numeric AS "Total Producido",
+    -- NUEVA COLUMNA: Etapa de Producción (Parte 2)
+    CASE
+        WHEN ac.producto ILIKE '%%Corte%%' THEN 'Corte'
+        WHEN ac.producto ILIKE '%%Conformado%%' THEN 'Conformado'
+        WHEN ac.producto ILIKE '%%Tratado%%' THEN 'Conformado'
+        WHEN ac.producto ILIKE '%%EXPANDIDO%%' THEN 'Expansion'
+        ELSE 'Producto Terminado'
+    END AS "Etapa Produccion",
+    -- NUEVA COLUMNA: Categoría de Insumo (Parte 2)
+    CASE 
+        WHEN ac.cuentacontable ~* 'hora hombre' THEN 'Personal'
+        WHEN ac.cuentacontable ~* 'energia|energía' THEN 'Energia'
+        WHEN ac.cuentacontable ~* 'cilindro|tubo' THEN 'Materia Prima'
+        WHEN ac.cuentacontable ~* 'gas' THEN 'Gas'
+        ELSE 'Insumos de Producción'
+    END AS "Categoria Insumo Produccion"
 FROM AbsorcionCalculada ac
 INNER JOIN Combinaciones comb 
     ON ac.producto = comb.productoparteprod 
