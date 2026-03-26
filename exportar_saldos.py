@@ -646,6 +646,7 @@ WITH BasePartes AS (
       AND ordendeproduccion IS NOT NULL 
       AND TRIM(ordendeproduccion::text) <> ''
       AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
+      AND Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
 ),
 ProduccionMensual AS (
     -- 2. Calculamos el total producido en el mes para el divisor de absorción
@@ -671,6 +672,7 @@ Combinaciones AS (
     WHERE c.fecha::timestamp >= '2026-01-01'
       AND c.ordendeproduccion IS NOT NULL 
       AND TRIM(c.ordendeproduccion::text) <> ''
+      AND c.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
 ),
 AbsorcionCalculada AS (
     -- 4. Pre-calculamos el valor agrupado de la absorción y traemos el Total Producido
@@ -685,6 +687,7 @@ AbsorcionCalculada AS (
         ON a.producto = pm.productoparteprod 
         AND DATE_TRUNC('month', a.fecha::timestamp) = pm.mes_produccion
     WHERE a.fecha::timestamp >= '2026-01-01'
+      AND a.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
     GROUP BY a.fecha::timestamp, a.producto, a.cuentacontable, pm.total_cantidad_mes
 )
 
@@ -714,6 +717,7 @@ LEFT JOIN ProduccionMensual pm
 WHERE c.fecha::timestamp >= '2026-01-01'
   AND c.ordendeproduccion IS NOT NULL 
   AND TRIM(c.ordendeproduccion::text) <> ''
+  AND c.Empresa LIKE '%%INPROCIL%%' -- <--- FILTRO APLICADO AQUÍ
 
 UNION ALL
 
@@ -726,7 +730,7 @@ SELECT
     NULL::numeric AS cantidadconsumoprod, 
     NULL::text AS unidadconsumoprod, 
     NULL::numeric AS preciounitvalorizadoconsumoprod, 
-    (ac.importe_absorcion * comb.cantidadparteprod)::numeric AS importevalorizadoconsumoprod, -- <--- NUEVO CÁLCULO: Importe x cantidadparteprod
+    (ac.importe_absorcion * comb.cantidadparteprod)::numeric AS importevalorizadoconsumoprod, 
     ac.importe_absorcion AS Importe, 
     'Pesos'::text AS monedavalorizacionconsumoprod, 
     comb.cantidadparteprod AS cantidadparteprod, 
