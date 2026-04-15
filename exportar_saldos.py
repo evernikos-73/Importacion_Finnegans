@@ -631,180 +631,9 @@ QUERY_SALDOS_PROVEEDORES_FILTRADOS = """
 select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
 """
 
-# ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción)
+# ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción) - (Bug solucionado: Código duplicado removido)
 QUERY_CONTROL_MRP = """
 WITH BasePartes AS (
-    -- 1. Aislamos las partes válidas y limpiamos la cantidadparteprod a número
-    SELECT 
-        ordendeproduccion,
-        productoparteprod,
-        NULLIF(NULLIF(TRIM(cantidadparteprod::text), ''), 'NULL')::numeric AS cantidadparteprod,
-        numerocomprobante,
-        fecha
-    FROM public.analisis_de_partes_de_produccion
-    WHERE fecha::timestamp >= '2026-01-01'
-      AND ordendeproduccion IS NOT NULL 
-      AND TRIM(ordendeproduccion::text) <> ''
-      AND LOWER(productoparteprod::text) NOT LIKE '%%scrap%%'
-      AND Empresa LIKE '%%INPROCIL%%'
-),
-ProduccionMensual AS (
-    -- 2. Calculamos el total producido en el mes para el divisor de absorción
-    SELECT 
-        DATE_TRUNC('month', fecha::timestamp) AS mes_produccion, 
-        productoparteprod, 
-        SUM(cantidadparteprod) AS total_cantidad_mes
-    FROM BasePartes
-    GROUP BY DATE_TRUNC('month', fecha::timestamp), productoparteprod
-),
-Combinaciones AS (
-    -- 3. Obtenemos combinaciones únicas, cantidadparteprod y la FECHA EXACTA de la orden
-    SELECT DISTINCT
-        DATE_TRUNC('month', p.fecha::timestamp) AS mes_produccion,
-        c.fecha::timestamp AS fecha_exacta,
-        p.productoparteprod::text AS productoparteprod,
-        c.ordendeproduccion::text AS ordendeproduccion,
-        p.numerocomprobante::text AS numerocomprobante_parte,
-        c.numerocomprobante::text AS numerocomprobante_consumo,
-        p.cantidadparteprod
-    FROM public.analisis_de_consumos_de_produccion c
-    INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
-    WHERE c.fecha::timestamp >= '2026-01-01'
-      AND c.ordendeproduccion IS NOT NULL 
-      AND TRIM(c.ordendeproduccion::text) <> ''
-      AND c.Empresa LIKE '%%INPROCIL%%'
-),
-AbsorcionCalculada AS (
-    -- 4. Pre-calculamos el valor agrupado de la absorción y traemos el Total Producido
-    SELECT 
-        a.fecha::timestamp AS fecha_absorcion,
-        a.producto::text AS producto,
-        a.cuentacontable::text AS cuentacontable,
-        (SUM(NULLIF(NULLIF(TRIM(a.importepesos::text), ''), 'NULL')::numeric) / NULLIF(pm.total_cantidad_mes, 0))::numeric AS importe_absorcion,
-        pm.total_cantidad_mes
-    FROM public.inpro2021nube_informe_absorcion_costos a
-    INNER JOIN ProduccionMensual pm 
-        ON a.producto = pm.productoparteprod 
-        AND DATE_TRUNC('month', a.fecha::timestamp) = pm.mes_produccion
-    WHERE a.fecha::timestamp >= '2026-01-01'
-      AND a.Empresa LIKE '%%INPROCIL%%'
-    GROUP BY a.fecha::timestamp, a.producto, a.cuentacontable, pm.total_cantidad_mes
-)
-
--- ==========================================
--- PARTE 1: Cruce de Consumos y Partes
--- ==========================================
-SELECT 
-    c.fecha::timestamp AS fecha, 
-    c.productoconsumoprod::text AS "Producto Consumido", 
-    NULLIF(NULLIF(TRIM(c.cantidadconsumoprod::text), ''), 'NULL')::numeric AS cantidadconsumoprod, 
-    c.unidadconsumoprod::text AS unidadconsumoprod, 
-    NULLIF(NULLIF(TRIM(c.preciounitvalorizadoconsumoprod::text), ''), 'NULL')::numeric AS preciounitvalorizadoconsumoprod, 
-    NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric AS importevalorizadoconsumoprod, 
-    (NULLIF(NULLIF(TRIM(c.importevalorizadoconsumoprod::text), ''), 'NULL')::numeric / NULLIF(p.cantidadparteprod, 0))::numeric AS Importe,
-    c.monedavalorizacionconsumoprod::text AS monedavalorizacionconsumoprod, 
-    p.cantidadparteprod AS cantidadparteprod, 
-    p.productoparteprod::text AS productoparteprod, 
-    c.ordendeproduccion::text AS ordendeproduccion,
-    p.numerocomprobante::text AS numerocomprobante_parte,
-    c.numerocomprobante::text AS numerocomprobante_consumo,
-    pm.total_cantidad_mes::numeric AS "Total Producido",
-    
-    -- Columna: Etapa de Producción (Actualizada)
-    CASE
-        WHEN p.productoparteprod ILIKE '%%Corte%%' THEN 'Corte'
-        WHEN p.productoparteprod ILIKE '%%Conformado%%' THEN 'Conformado'
-        WHEN p.productoparteprod ILIKE '%%Tratado%%' THEN 'Tratado'
-        WHEN p.productoparteprod ILIKE '%%EXPANDIDO%%' THEN 'Expansion'
-        ELSE 'Producto Terminado'
-    END AS "Etapa Produccion",
-    
-    -- Columna: Categoría de Insumo
-    CASE 
-        WHEN c.productoconsumoprod ~* 'hora hombre' THEN 'Personal'
-        WHEN c.productoconsumoprod ~* 'energia|energía' THEN 'Energia'
-        WHEN c.productoconsumoprod ~* 'cilindro|tubo' THEN 'Materia Prima'
-        WHEN c.productoconsumoprod ~* 'gas' THEN 'Gas'
-        ELSE 'Insumos de Producción'
-    END AS "Categoria Insumo Produccion",
-
-    -- Columna: Extractor de Código
-    SUBSTRING(p.productoparteprod::text FROM '[0-9]{3}-[0-9]+') AS "Codigo Producto",
-
-    -- Columna: Familia de Gas (Actualizada)
-    CASE 
-        WHEN p.productoparteprod ILIKE '%% GA%%' OR p.productoparteprod ILIKE '%%-GA-%%' THEN 'Gases del Aire'
-        WHEN p.productoparteprod ILIKE '%% GN%%' OR p.productoparteprod ILIKE '%%-GN-%%' OR p.productoparteprod ILIKE '%% GNV%%' OR p.productoparteprod ILIKE '%%-GNV-%%' THEN 'Gas Natural'
-        WHEN p.productoparteprod ILIKE '%%TUBO EXPANDIDO%%' THEN 'Gas Natural'
-        WHEN p.productoparteprod ILIKE '%%DIOXIDO DE CARBONO%%' OR p.productoparteprod ILIKE '%%DIÓXIDO DE CARBONO%%' THEN 'CO2'
-        ELSE 'Otros'
-    END AS "Familia de Gas"
-
-FROM public.analisis_de_consumos_de_produccion c
-INNER JOIN BasePartes p ON c.ordendeproduccion = p.ordendeproduccion
-LEFT JOIN ProduccionMensual pm 
-    ON p.productoparteprod = pm.productoparteprod 
-    AND DATE_TRUNC('month', p.fecha::timestamp) = pm.mes_produccion
-WHERE c.fecha::timestamp >= '2026-01-01'
-  AND c.ordendeproduccion IS NOT NULL 
-  AND TRIM(c.ordendeproduccion::text) <> ''
-  AND c.Empresa LIKE '%%INPROCIL%%'
-
-UNION ALL
-
--- ==========================================
--- PARTE 2: Absorción multiplicada por combinaciones
--- ==========================================
-SELECT 
-    comb.fecha_exacta AS fecha, 
-    ac.cuentacontable::text AS "Producto Consumido", 
-    NULL::numeric AS cantidadconsumoprod, 
-    NULL::text AS unidadconsumoprod, 
-    NULL::numeric AS preciounitvalorizadoconsumoprod, 
-    (ac.importe_absorcion * comb.cantidadparteprod)::numeric AS importevalorizadoconsumoprod, 
-    ac.importe_absorcion AS Importe, 
-    'Pesos'::text AS monedavalorizacionconsumoprod, 
-    comb.cantidadparteprod AS cantidadparteprod, 
-    ac.producto AS productoparteprod, 
-    comb.ordendeproduccion AS ordendeproduccion,
-    comb.numerocomprobante_parte AS numerocomprobante_parte,
-    comb.numerocomprobante_consumo AS numerocomprobante_consumo,
-    ac.total_cantidad_mes::numeric AS "Total Producido",
-    
-    -- Columna: Etapa de Producción (Actualizada)
-    CASE
-        WHEN ac.producto ILIKE '%%Corte%%' THEN 'Corte'
-        WHEN ac.producto ILIKE '%%Conformado%%' THEN 'Conformado'
-        WHEN ac.producto ILIKE '%%Tratado%%' THEN 'Tratado'
-        WHEN ac.producto ILIKE '%%EXPANDIDO%%' THEN 'Expansion'
-        ELSE 'Producto Terminado'
-    END AS "Etapa Produccion",
-    
-    -- Columna: Categoría de Insumo
-    CASE 
-        WHEN ac.cuentacontable ~* 'hora hombre' THEN 'Personal'
-        WHEN ac.cuentacontable ~* 'energia|energía' THEN 'Energia'
-        WHEN ac.cuentacontable ~* 'cilindro|tubo' THEN 'Materia Prima'
-        WHEN ac.cuentacontable ~* 'gas' THEN 'Gas'
-        ELSE 'Insumos de Producción'
-    END AS "Categoria Insumo Produccion",
-
-    -- Columna: Extractor de Código
-    SUBSTRING(ac.producto::text FROM '[0-9]{3}-[0-9]+') AS "Codigo Producto",
-
-    -- Columna: Familia de Gas (Actualizada)
-    CASE 
-        WHEN ac.producto ILIKE '%% GA%%' OR ac.producto ILIKE '%%-GA-%%' THEN 'Gases del Aire'
-        WHEN ac.producto ILIKE '%% GN%%' OR ac.producto ILIKE '%%-GN-%%' OR ac.producto ILIKE '%% GNV%%' OR ac.producto ILIKE '%%-GNV-%%' THEN 'Gas Natural'
-        WHEN ac.producto ILIKE '%%TUBO EXPANDIDO%%' THEN 'Gas Natural'
-        WHEN ac.producto ILIKE '%%DIOXIDO DE CARBONO%%' OR ac.producto ILIKE '%%DIÓXIDO DE CARBONO%%' THEN 'CO2'
-        ELSE 'Otros'
-    END AS "Familia de Gas"
-
-FROM AbsorcionCalculada ac
-INNER JOIN Combinaciones comb 
-    ON ac.producto = comb.productoparteprod 
-    AND DATE_TRUNC('month', ac.fecha_absorcion) = comb.mes_produccion;WITH BasePartes AS (
     -- 1. Aislamos las partes válidas y limpiamos la cantidadparteprod a número
     SELECT 
         ordendeproduccion,
@@ -994,6 +823,9 @@ SPREADSHEET_STOCK_PUC_URL = os.environ.get(
     "https://docs.google.com/spreadsheets/d/<ID_SHEET_STOCK_PUC>/edit"
 )
 
+# ✅ ID del nuevo archivo CMV
+SPREADSHEET_CMV_ID = "1xvrohjQOKAdUUEnXKw3q60U3ueShSkdwgZnph-meMUA"
+
 # ------------------------------------------------------------------------------
 # 📁 Spreadsheet 1
 # ------------------------------------------------------------------------------
@@ -1054,7 +886,7 @@ exportar_tabla_completa(
     ],
 )
 
-# 6. ✅ NUEVO: Análisis de Producción y Control MRP
+# 6. Análisis de Producción y Control MRP
 print("\nEjecutando exportación: Análisis Control MRP...")
 exportar_tabla_completa(
     QUERY_CONTROL_MRP,
@@ -1069,7 +901,6 @@ exportar_tabla_completa(
     ],
     create_if_missing=True
 )
-
 
 # ------------------------------------------------------------------------------
 # ✅ Análisis de churn (agrupado) y exportación
@@ -1091,7 +922,6 @@ exportar_tabla_completa(
 
 # ------------------------------------------------------------------------------
 # ✅ RFM (agrupado + USD + M promedio mensual + monto última compra ARS)
-#    Export: limpia solo A:N para preservar fórmulas desde O en adelante
 # ------------------------------------------------------------------------------
 print("\nCalculando RFM...")
 usd_tc = obtener_tc_usd_desde_aux(saldos_sheet, sheet_name="AUX", range_name="A:B")
@@ -1111,7 +941,7 @@ exportar_tabla_completa(
     saldos_sheet,
     "RFM",
     columnas_decimal=[],
-    clear_range="A:N",   # ✅ ahora limpia A:N
+    clear_range="A:N",
     create_if_missing=True
 )
 
@@ -1151,4 +981,25 @@ exportar_stock(
     stock_con_puc_sheet,
     "Aux Stock",
     ["Stock", "UltimoPrecioCompra"],
+)
+
+# ------------------------------------------------------------------------------
+# 📁 Spreadsheet 4 (NUEVO CMV)
+# ------------------------------------------------------------------------------
+cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
+
+print("\nEjecutando exportación: CMV...")
+df_cmv = pd.read_sql("SELECT * FROM public.inpro2021nube_cmv", engine)
+
+# Recortamos a un máximo de 15 columnas (A hasta O) para evitar sobreescribir
+# cualquier fórmula o dato que el usuario haya agregado de la columna P en adelante.
+df_cmv_recortado = df_cmv.iloc[:, :15]
+
+exportar_tabla_completa(
+    query_or_df=df_cmv_recortado,
+    spreadsheet=cmv_sheet,
+    hoja_nombre="AUX CMV",
+    columnas_decimal=[],  # Puedes agregar aquí las columnas de importes si necesitan limpieza/formato numérico
+    clear_range="A:O",    # Solo limpia y sobreescribe estas columnas
+    create_if_missing=True
 )
