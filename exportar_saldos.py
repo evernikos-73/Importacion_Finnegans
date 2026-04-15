@@ -1001,7 +1001,7 @@ df_cmv_recortado = df_cmv.iloc[:, :15]
 exportar_tabla_completa(
     query_or_df=df_cmv_recortado,
     spreadsheet=cmv_sheet,
-    hoja_nombre="AUX CMV",
+    hoja_nombre="AUX_CMV",
     columnas_decimal=[],  
     clear_range="A:O",    # Solo limpia y sobreescribe estas columnas
     create_if_missing=True
