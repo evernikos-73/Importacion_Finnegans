@@ -983,6 +983,9 @@ exportar_stock(
     ["Stock", "UltimoPrecioCompra"],
 )
 
+# ✅ ID del nuevo archivo CMV
+SPREADSHEET_CMV_ID = "1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA"
+
 # ------------------------------------------------------------------------------
 # 📁 Spreadsheet 4 (NUEVO CMV)
 # ------------------------------------------------------------------------------
@@ -999,7 +1002,7 @@ exportar_tabla_completa(
     query_or_df=df_cmv_recortado,
     spreadsheet=cmv_sheet,
     hoja_nombre="AUX CMV",
-    columnas_decimal=[],  # Puedes agregar aquí las columnas de importes si necesitan limpieza/formato numérico
+    columnas_decimal=[],  
     clear_range="A:O",    # Solo limpia y sobreescribe estas columnas
     create_if_missing=True
 )
