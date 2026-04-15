@@ -1002,7 +1002,7 @@ exportar_tabla_completa(
     query_or_df=df_cmv_recortado,
     spreadsheet=cmv_sheet,
     hoja_nombre="AUX_CMV",
-    columnas_decimal=[],  
-    clear_range="A:O",    # Solo limpia y sobreescribe estas columnas
+    columnas_decimal=["importe"],  # 👈 AQUÍ APLICAMOS LA NORMALIZACIÓN DECIMAL
+    clear_range="A:O",    
     create_if_missing=True
 )
