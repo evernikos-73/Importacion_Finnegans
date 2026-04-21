@@ -829,7 +829,7 @@ SPREADSHEET_LIBRO_MAYOR_URL = os.environ.get(
     "https://docs.google.com/spreadsheets/d/1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA/edit"
 )
 
-# ✅ ID del nuevo archivo CMV
+# ✅ ID del archivo para CMV y Costo Cilindros
 SPREADSHEET_CMV_ID = "1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA"
 
 # ------------------------------------------------------------------------------
@@ -963,7 +963,6 @@ exportar_libro_mayor(
     ["Debe", "Haber", "importemonedaprincipal", "Imp. operacion ppal.", "Imp. operacion sec.", "Tipo Cambio"],
 )
 
-# ✅ AQUÍ SE EJECUTA LA NUEVA QUERY FILTRADA Y SE ELIMINÓ LA EXPORTACIÓN DUPLICADA
 exportar_stock(
     QUERY_STOCK_FILTRADO,
     libro_mayor_sheet,
@@ -980,19 +979,31 @@ exportar_sumas_y_saldos(
 
 
 # ------------------------------------------------------------------------------
-# 📁 Spreadsheet 3 (NUEVO CMV)
+# 📁 Spreadsheet 3 (NUEVO CMV y COSTOS PARTES PRODUCCIÓN)
 # ------------------------------------------------------------------------------
 cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
 
 print("\nEjecutando exportación: CMV...")
 df_cmv = pd.read_sql("SELECT * FROM public.inpro2021nube_cmv", engine)
-
 df_cmv_recortado = df_cmv.iloc[:, :15]
 
 exportar_tabla_completa(
     query_or_df=df_cmv_recortado,
     spreadsheet=cmv_sheet,
     hoja_nombre="AUX_CMV",
+    columnas_decimal=["importe"],  
+    clear_range="A:O",    
+    create_if_missing=True
+)
+
+# ✅ NUEVA EXPORTACIÓN: Costos Partes de Producción
+print("\nEjecutando exportación: Costos Partes de Producción...")
+df_costos_partes = pd.read_sql("SELECT * FROM public.inpro2021nube_costos_partes_de_produccion", engine)
+
+exportar_tabla_completa(
+    query_or_df=df_costos_partes,
+    spreadsheet=cmv_sheet,
+    hoja_nombre="Aux Costo Cilindros",
     columnas_decimal=["importe"],  
     clear_range="A:O",    
     create_if_missing=True
