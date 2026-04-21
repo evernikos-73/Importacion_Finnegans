@@ -71,13 +71,12 @@ def get_or_create_worksheet(spreadsheet, title, rows=1000, cols=26):
 
 # ------------------------------------------------------------------------------
 # 🧩 FUNCIÓN GENÉRICA EXPORTAR TABLA COMPLETA
-#    Permite limpiar SOLO un rango (ej: "A:D") en vez de borrar toda la hoja
 # ------------------------------------------------------------------------------
 def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_decimal=[], clear_range=None, create_if_missing=False):
     if isinstance(query_or_df, str):
         df = pd.read_sql(query_or_df, engine)
     else:
-        df = query_or_df.copy()  # evita side-effects (para reutilizar DF en churn/RFM)
+        df = query_or_df.copy()  
 
     for col in columnas_decimal:
         if col in df.columns:
@@ -631,7 +630,7 @@ QUERY_SALDOS_PROVEEDORES_FILTRADOS = """
 select * from public.inpro2021nube_composicion_saldo_proveedores_inprocil c
 """
 
-# ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción) - (Bug solucionado: Código duplicado removido)
+# ✅ NUEVA QUERY INCORPORADA: Análisis MRP (Costos y Absorción) 
 QUERY_CONTROL_MRP = """
 WITH BasePartes AS (
     -- 1. Aislamos las partes válidas y limpiamos la cantidadparteprod a número
@@ -807,6 +806,17 @@ INNER JOIN Combinaciones comb
     AND DATE_TRUNC('month', ac.fecha_absorcion) = comb.mes_produccion;
 """
 
+# ✅ NUEVA QUERY: Stock Filtrado (ignora mayúsculas/minúsculas y filtra por los comienzos/palabras solicitadas)
+QUERY_STOCK_FILTRADO = """
+SELECT * FROM public.inpro2021nube_stock_con_PUC
+WHERE nombreproducto ILIKE 'Cilindro I%%'
+   OR nombreproducto ILIKE 'Corte%%'
+   OR nombreproducto ILIKE 'Conformado%%'
+   OR nombreproducto ILIKE 'Tratado%%'
+   OR nombreproducto ILIKE 'TUBO DE ACERO%%'
+   OR nombreproducto ILIKE '%%EXPANDIDO%%'
+"""
+
 # ------------------------------------------------------------------------------
 # EXPORTACIONES PRINCIPALES
 # ------------------------------------------------------------------------------
@@ -816,15 +826,11 @@ SPREADSHEET_SALDOS_URL = os.environ.get(
 )
 SPREADSHEET_LIBRO_MAYOR_URL = os.environ.get(
     "SPREADSHEET_LIBRO_MAYOR_URL",
-    "https://docs.google.com/spreadsheets/d/<ID_SHEET_LIBRO_MAYOR>/edit"
-)
-SPREADSHEET_STOCK_PUC_URL = os.environ.get(
-    "SPREADSHEET_STOCK_PUC_URL",
-    "https://docs.google.com/spreadsheets/d/<ID_SHEET_STOCK_PUC>/edit"
+    "https://docs.google.com/spreadsheets/d/1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA/edit"
 )
 
 # ✅ ID del nuevo archivo CMV
-SPREADSHEET_CMV_ID = "1xvrohjQOKAdUUEnXKw3q60U3ueShSkdwgZnph-meMUA"
+SPREADSHEET_CMV_ID = "1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA"
 
 # ------------------------------------------------------------------------------
 # 📁 Spreadsheet 1
@@ -946,7 +952,7 @@ exportar_tabla_completa(
 )
 
 # ------------------------------------------------------------------------------
-# 📁 Spreadsheet 2
+# 📁 Spreadsheet 2 (Libro Mayor, Stock, Sumas y Saldos)
 # ------------------------------------------------------------------------------
 libro_mayor_sheet = client.open_by_url(SPREADSHEET_LIBRO_MAYOR_URL)
 
@@ -957,8 +963,9 @@ exportar_libro_mayor(
     ["Debe", "Haber", "importemonedaprincipal", "Imp. operacion ppal.", "Imp. operacion sec.", "Tipo Cambio"],
 )
 
+# ✅ AQUÍ SE EJECUTA LA NUEVA QUERY FILTRADA Y SE ELIMINÓ LA EXPORTACIÓN DUPLICADA
 exportar_stock(
-    "SELECT * FROM public.inpro2021nube_stock_con_PUC",
+    QUERY_STOCK_FILTRADO,
     libro_mayor_sheet,
     "Aux Stock",
     ["Stock", "UltimoPrecioCompra"],
@@ -971,38 +978,22 @@ exportar_sumas_y_saldos(
     ["Debe", "Haber", "saldoperiodo", "saldo", "saldoinicial"],
 )
 
-# ------------------------------------------------------------------------------
-# 📁 Spreadsheet 3
-# ------------------------------------------------------------------------------
-stock_con_puc_sheet = client.open_by_url(SPREADSHEET_STOCK_PUC_URL)
-
-exportar_stock(
-    "SELECT * FROM public.inpro2021nube_stock_con_PUC",
-    stock_con_puc_sheet,
-    "Aux Stock",
-    ["Stock", "UltimoPrecioCompra"],
-)
-
-# ✅ ID del nuevo archivo CMV
-SPREADSHEET_CMV_ID = "1e9BuGiiOx-GhokgsM37MAaUfddxLH30T-gtYu3UtfOA"
 
 # ------------------------------------------------------------------------------
-# 📁 Spreadsheet 4 (NUEVO CMV)
+# 📁 Spreadsheet 3 (NUEVO CMV)
 # ------------------------------------------------------------------------------
 cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
 
 print("\nEjecutando exportación: CMV...")
 df_cmv = pd.read_sql("SELECT * FROM public.inpro2021nube_cmv", engine)
 
-# Recortamos a un máximo de 15 columnas (A hasta O) para evitar sobreescribir
-# cualquier fórmula o dato que el usuario haya agregado de la columna P en adelante.
 df_cmv_recortado = df_cmv.iloc[:, :15]
 
 exportar_tabla_completa(
     query_or_df=df_cmv_recortado,
     spreadsheet=cmv_sheet,
     hoja_nombre="AUX_CMV",
-    columnas_decimal=["importe"],  # 👈 AQUÍ APLICAMOS LA NORMALIZACIÓN DECIMAL
+    columnas_decimal=["importe"],  
     clear_range="A:O",    
     create_if_missing=True
 )
