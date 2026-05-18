@@ -605,70 +605,75 @@ def calcular_abc_mensual(
     cuenta_keyword: str = CUENTA_KEYWORD_VENTA
 ) -> pd.DataFrame:
     """
-    Calcula la clasificacion ABC de cada cliente por mes.
+    Construye un lookup (periodo, cliente_agrupado) -> clase_abc
+    para luego mergear sobre df_facturacion_full.
 
-    Columnas del resultado:
-        periodo          : ano-mes (ej: 2024-01)
-        cliente_agrupado : nombre agrupado del cliente
-        facturacion_mes  : suma de importemonedaprincipal del mes (solo ventas)
-        pct_sobre_total  : porcentaje sobre el total del mes (0-100)
-        pct_acumulado    : porcentaje acumulado dentro del mes (0-100)
-        clase_abc        : A / B / C segun umbral_a y umbral_b
+    Solo se clasifican filas cuyo cuentanombre empieza con cuenta_keyword
+    (case-insensitive). El resto recibe clase_abc = "" (cadena vacia).
+
+    Retorna el DataFrame original con la columna clase_abc agregada al final.
+    Las filas que NO son de venta quedan con clase_abc = "".
     """
     required = ["clientenombre", "fechacomprobante", "cuentanombre", "importemonedaprincipal"]
     missing  = [c for c in required if c not in df_facturacion_full.columns]
     if missing:
         raise ValueError(f"Faltan columnas para ABC: {missing}")
 
-    df = df_facturacion_full[required].copy()
+    df_full = df_facturacion_full.copy()
 
-    # 1. Filtrar solo lineas de Venta (cuentanombre comienza con "venta", case-insensitive)
-    df = df[df["cuentanombre"].astype("string").str.lower().str.startswith(cuenta_keyword, na=False)].copy()
-
-    # 2. Parsear fechas
-    df["fechacomprobante"] = pd.to_datetime(df["fechacomprobante"], errors="coerce")
-    df = df.dropna(subset=["fechacomprobante"])
-
-    # 3. Convertir importes
-    df["importemonedaprincipal"] = pd.to_numeric(df["importemonedaprincipal"], errors="coerce")
-    df = df.dropna(subset=["importemonedaprincipal"])
-
-    # 4. Aplicar agrupacion de clientes (mismo criterio que RFM y Churn)
-    df = aplicar_agrupacion_cliente(df, mapa_clientes or {}, source_col="clientenombre", target_col="cliente_agrupado")
-
-    # 5. Crear columna de periodo YYYY-MM
-    df["periodo"] = df["fechacomprobante"].dt.to_period("M").astype(str)
-
-    # 6. Sumar facturacion por cliente y periodo
-    resumen = (
-        df.groupby(["periodo", "cliente_agrupado"], as_index=False)["importemonedaprincipal"]
-        .sum()
-        .rename(columns={"importemonedaprincipal": "facturacion_mes"})
+    # --- preparar columnas auxiliares en el full ---
+    df_full["_fecha_dt"] = pd.to_datetime(df_full["fechacomprobante"], errors="coerce")
+    df_full["_periodo"]  = df_full["_fecha_dt"].dt.to_period("M").astype(str)
+    df_full["_importe"]  = pd.to_numeric(df_full["importemonedaprincipal"], errors="coerce")
+    df_full = aplicar_agrupacion_cliente(
+        df_full, mapa_clientes or {},
+        source_col="clientenombre", target_col="_cliente_agrupado"
     )
 
-    # 7. Excluir filas con facturacion neta <= 0 (devoluciones netas)
+    # --- filtrar solo filas de venta para construir el ranking ---
+    mask_venta = (
+        df_full["cuentanombre"].astype("string")
+        .str.lower().str.startswith(cuenta_keyword, na=False)
+    )
+    df_venta = df_full[mask_venta & df_full["_importe"].notna()].copy()
+
+    # --- sumar por periodo + cliente agrupado ---
+    resumen = (
+        df_venta
+        .groupby(["_periodo", "_cliente_agrupado"], as_index=False)["_importe"]
+        .sum()
+        .rename(columns={"_importe": "facturacion_mes"})
+    )
     resumen = resumen[resumen["facturacion_mes"] > 0].copy()
 
-    # 8. Ordenar de mayor a menor dentro de cada mes (requisito del ABC)
-    resumen = resumen.sort_values(["periodo", "facturacion_mes"], ascending=[True, False])
+    # --- ranking dentro de cada periodo ---
+    resumen = resumen.sort_values(["_periodo", "facturacion_mes"], ascending=[True, False])
+    total_mes = resumen.groupby("_periodo")["facturacion_mes"].transform("sum")
+    resumen["_pct"]      = resumen["facturacion_mes"] / total_mes
+    resumen["_pct_acum"] = resumen.groupby("_periodo")["_pct"].cumsum()
 
-    # 9. Calcular % sobre total del mes y % acumulado (vectorizado con groupby+transform)
-    total_mes               = resumen.groupby("periodo")["facturacion_mes"].transform("sum")
-    resumen["pct_sobre_total"] = resumen["facturacion_mes"] / total_mes
-    resumen["pct_acumulado"]   = resumen.groupby("periodo")["pct_sobre_total"].cumsum()
-
-    # 10. Clasificar A / B / C
+    # --- clasificar A / B / C ---
     resumen["clase_abc"] = np.where(
-        resumen["pct_acumulado"] <= umbral_a, "A",
-        np.where(resumen["pct_acumulado"] <= umbral_b, "B", "C")
+        resumen["_pct_acum"] <= umbral_a, "A",
+        np.where(resumen["_pct_acum"] <= umbral_b, "B", "C")
     )
 
-    # 11. Formatear porcentajes para legibilidad en Sheets
-    resumen["pct_sobre_total"] = (resumen["pct_sobre_total"] * 100).round(2)
-    resumen["pct_acumulado"]   = (resumen["pct_acumulado"]   * 100).round(2)
+    # --- lookup: (periodo, cliente_agrupado) -> clase_abc ---
+    lookup = resumen.set_index(["_periodo", "_cliente_agrupado"])["clase_abc"].to_dict()
 
-    print(f"OK ABC mensual generado: {len(resumen)} filas (cliente-periodo)")
-    return resumen.reset_index(drop=True)
+    # --- aplicar al dataframe completo ---
+    def asignar_clase(row):
+        if not mask_venta.loc[row.name]:
+            return ""
+        return lookup.get((row["_periodo"], row["_cliente_agrupado"]), "")
+
+    df_full["clase_abc"] = df_full.apply(asignar_clase, axis=1)
+
+    # --- limpiar columnas auxiliares ---
+    df_full = df_full.drop(columns=["_fecha_dt", "_periodo", "_importe", "_cliente_agrupado"])
+
+    print(f"OK ABC: columna clase_abc agregada. Filas con clasificacion: {(df_full['clase_abc'] != '').sum()}")
+    return df_full
 
 # ------------------------------------------------------------------------------
 # QUERIES SQL
@@ -921,6 +926,17 @@ print("\nCargando facturacion completa desde DW...")
 df_facturacion_full = pd.read_sql(text("SELECT * FROM public.inpro2021nube_facturacion"), engine)
 print(f"Facturacion total cargada: {len(df_facturacion_full)} filas")
 
+# Agregar columna clase_abc a df_facturacion_full ANTES de exportar
+# Solo filas con cuentanombre que comience con "venta" reciben A/B/C; el resto queda vacio.
+print("\nCalculando ABC mensual por cliente...")
+df_facturacion_full = calcular_abc_mensual(
+    df_facturacion_full=df_facturacion_full,
+    mapa_clientes=mapa_clientes_agrupados,
+    umbral_a=0.80,
+    umbral_b=0.95,
+    cuenta_keyword=CUENTA_KEYWORD_VENTA
+)
+
 exportar_tabla_completa(
     df_facturacion_full,
     saldos_sheet,
@@ -990,24 +1006,7 @@ exportar_tabla_completa(
     create_if_missing=True
 )
 
-# 9. NUEVO: ABC Mensual por Cliente
-print("\nCalculando ABC mensual por cliente...")
-df_abc = calcular_abc_mensual(
-    df_facturacion_full=df_facturacion_full,
-    mapa_clientes=mapa_clientes_agrupados,
-    umbral_a=0.80,
-    umbral_b=0.95,
-    cuenta_keyword=CUENTA_KEYWORD_VENTA
-)
-
-exportar_tabla_completa(
-    df_abc,
-    saldos_sheet,
-    "ABC_Mensual",
-    columnas_decimal=["facturacion_mes", "pct_sobre_total", "pct_acumulado"],
-    clear_range="A:F",
-    create_if_missing=True
-)
+# ABC Mensual: integrado directamente en Base Facturacion (ver bloque de carga)
 
 # ------------------------------------------------------------------------------
 # Spreadsheet 2: Libro Mayor, Stock, Sumas y Saldos
