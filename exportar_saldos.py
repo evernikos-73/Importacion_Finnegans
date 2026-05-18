@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import pandas as pd
 import gspread
 from gspread_dataframe import set_with_dataframe
@@ -84,7 +84,7 @@ def get_or_create_worksheet(spreadsheet, title, rows=1000, cols=26):
 # ------------------------------------------------------------------------------
 def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_decimal=[], clear_range=None, create_if_missing=False):
     if isinstance(query_or_df, str):
-        df = pd.read_sql(query_or_df, engine)
+        df = pd.read_sql(text(query_or_df), engine)
     else:
         df = query_or_df.copy()
 
@@ -108,7 +108,7 @@ def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_deci
 # ------------------------------------------------------------------------------
 def exportar_tabla_corregida(query_or_df, spreadsheet, hoja_nombre):
     if isinstance(query_or_df, str):
-        df = pd.read_sql(query_or_df, engine)
+        df = pd.read_sql(text(query_or_df), engine)
     else:
         df = query_or_df.copy()
 
@@ -136,7 +136,7 @@ def exportar_tabla_corregida(query_or_df, spreadsheet, hoja_nombre):
 # FUNCION: Exportar Libro Mayor A2:Q sin encabezado
 # ------------------------------------------------------------------------------
 def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(text(query), engine)
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -152,7 +152,7 @@ def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
 # FUNCION: Exportar Stock A2:J sin encabezado
 # ------------------------------------------------------------------------------
 def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(text(query), engine)
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -168,7 +168,7 @@ def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
 # FUNCION: Exportar Sumas y Saldos A2:J sin encabezado
 # ------------------------------------------------------------------------------
 def exportar_sumas_y_saldos(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(text(query), engine)
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -298,7 +298,7 @@ FROM public.inpro2021nube_facturacion
 WHERE cuentanombre LIKE 'Ventas Merc%%'
 ORDER BY clientenombre, fechacomprobante
 """
-        df = pd.read_sql(query, engine)
+        df = pd.read_sql(text(query), engine)
     else:
         cols = ["clientenombre", "fechacomprobante", "cuentanombre"]
         df = df_facturacion_full[cols].copy()
@@ -918,7 +918,7 @@ exportar_tabla_completa(
 # 5. Facturacion
 # OPT: Carga UNICA de df_facturacion_full, reutilizado en Churn, RFM y ABC
 print("\nCargando facturacion completa desde DW...")
-df_facturacion_full = pd.read_sql("SELECT * FROM public.inpro2021nube_facturacion", engine)
+df_facturacion_full = pd.read_sql(text("SELECT * FROM public.inpro2021nube_facturacion"), engine)
 print(f"Facturacion total cargada: {len(df_facturacion_full)} filas")
 
 exportar_tabla_completa(
@@ -1041,7 +1041,7 @@ exportar_sumas_y_saldos(
 cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
 
 print("\nEjecutando exportacion: CMV...")
-df_cmv = pd.read_sql("SELECT * FROM public.inpro2021nube_cmv", engine)
+df_cmv = pd.read_sql(text("SELECT * FROM public.inpro2021nube_cmv"), engine)
 df_cmv_recortado = df_cmv.iloc[:, :15]
 
 exportar_tabla_completa(
@@ -1054,7 +1054,7 @@ exportar_tabla_completa(
 )
 
 print("\nEjecutando exportacion: Costos Partes de Produccion...")
-df_costos_partes = pd.read_sql("SELECT * FROM public.inpro2021nube_costos_partes_de_produccion", engine)
+df_costos_partes = pd.read_sql(text("SELECT * FROM public.inpro2021nube_costos_partes_de_produccion"), engine)
 
 exportar_tabla_completa(
     query_or_df=df_costos_partes,
