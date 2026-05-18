@@ -1066,11 +1066,4 @@ exportar_tabla_completa(
 )
 
 print("\\nPROCESO COMPLETO FINALIZADO")
-'''
 
-output_path = os.path.expanduser('~/output/script_total_con_abc.py')
-with open(output_path, 'w', encoding='utf-8-sig') as f:
-    f.write(script)
-
-print(f"Archivo guardado: {output_path}")
-print(f"Tamano: {len(script)} caracteres, {script.count(chr(10))} lineas")
