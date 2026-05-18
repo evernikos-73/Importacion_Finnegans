@@ -1,3 +1,7 @@
+import os
+os.makedirs(os.path.expanduser('~/output'), exist_ok=True)
+
+script = '''\
 from sqlalchemy import create_engine
 import pandas as pd
 import gspread
@@ -1064,3 +1068,13 @@ exportar_tabla_completa(
     clear_range="A:O",
     create_if_missing=True
 )
+
+print("\\nPROCESO COMPLETO FINALIZADO")
+'''
+
+output_path = os.path.expanduser('~/output/script_total_con_abc.py')
+with open(output_path, 'w', encoding='utf-8-sig') as f:
+    f.write(script)
+
+print(f"Archivo guardado: {output_path}")
+print(f"Tamano: {len(script)} caracteres, {script.count(chr(10))} lineas")
