@@ -1064,6 +1064,3 @@ exportar_tabla_completa(
     clear_range="A:O",
     create_if_missing=True
 )
-
-print("\\nPROCESO COMPLETO FINALIZADO")
-
