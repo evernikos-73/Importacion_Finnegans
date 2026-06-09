@@ -44,25 +44,11 @@ CUENTA_KEYWORD_VENTA = "venta"
 # ------------------------------------------------------------------------------
 # Funciones genericas con retry
 # ------------------------------------------------------------------------------
-def set_with_retry(worksheet, df, retries=3, wait=5):
+def set_with_retry(worksheet, df, retries=3, wait=5, row=1, include_header=True):
     for i in range(1, retries + 1):
         try:
-            set_with_dataframe(worksheet, df, include_index=False, resize=False)
+            set_with_dataframe(worksheet, df, row=row, col=1, include_index=False, include_column_header=include_header, resize=False)
             print("OK Exportacion completada.")
-            return
-        except Exception as e:
-            print(f"Intento {i}/{retries} fallo: {e}")
-            if i < retries:
-                print(f"Reintentando en {wait} segundos...")
-                time.sleep(wait)
-            else:
-                raise
-
-def update_with_retry(worksheet, values, range_name, retries=3, wait=5):
-    for i in range(1, retries + 1):
-        try:
-            worksheet.update(values=values, range_name=range_name)
-            print("OK Exportacion sin encabezado completada.")
             return
         except Exception as e:
             print(f"Intento {i}/{retries} fallo: {e}")
@@ -142,10 +128,10 @@ def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
     df_recortado = df.iloc[:, :17]
-    valores = df_recortado.values.tolist()
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:Q"])
-    update_with_retry(worksheet, values=valores, range_name="A2")
+    
+    set_with_retry(worksheet, df_recortado, row=2, include_header=False)
     print("OK Exportado sin encabezado: Aux Libro Mayor")
 
 # ------------------------------------------------------------------------------
@@ -158,10 +144,10 @@ def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
     df_recortado = df.iloc[:, :10]
-    valores = df_recortado.values.tolist()
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:J"])
-    update_with_retry(worksheet, values=valores, range_name="A2")
+    
+    set_with_retry(worksheet, df_recortado, row=2, include_header=False)
     print("OK Exportado sin encabezado: Aux Stock")
 
 # ------------------------------------------------------------------------------
@@ -174,10 +160,10 @@ def exportar_sumas_y_saldos(query, spreadsheet, hoja_nombre, columnas_decimal=[]
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
     df_recortado = df.iloc[:, :10]
-    valores = df_recortado.values.tolist()
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:J"])
-    update_with_retry(worksheet, values=valores, range_name="A2")
+    
+    set_with_retry(worksheet, df_recortado, row=2, include_header=False)
     print("OK Exportado sin encabezado: Aux Sumas y Saldos")
 
 # ------------------------------------------------------------------------------
@@ -216,7 +202,7 @@ def obtener_mapa_clientes_agrupados(spreadsheet, sheet_name="AUX_Agrup_Clientes"
         grp  = row[1]
         k    = norm_name(orig)
         if not k:
-            continue
+             continue
         grp_clean = str(grp).strip() if grp is not None else ""
         if grp_clean == "":
             continue
@@ -240,7 +226,7 @@ def aplicar_agrupacion_cliente(df: pd.DataFrame, mapa: dict, source_col="cliente
             return ""
         sx = str(x).strip()
         if sx == "":
-            return ""
+           return ""
         return mapa.get(norm_name(sx), sx)
 
     df[target_col] = df[source_col].apply(map_fn).astype(str).str.strip()
@@ -439,7 +425,7 @@ def crear_matriz_churn(df):
         primera_compra = primera_compra_dict.get(cliente_agrupado)
 
         if idx % 100 == 0:
-            print(f"Procesando cliente agrupado {idx}/{total_clientes}...")
+             print(f"Procesando cliente agrupado {idx}/{total_clientes}...")
 
         status_mes_anterior = None
 
