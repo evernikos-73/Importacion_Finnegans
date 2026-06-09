@@ -135,7 +135,7 @@ def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     print("OK Exportado sin encabezado: Aux Libro Mayor")
 
 # ------------------------------------------------------------------------------
-# FUNCION: Exportar Stock A2:J sin encabezado
+# FUNCION: Exportar Stock A2:K sin encabezado
 # ------------------------------------------------------------------------------
 def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     df = pd.read_sql(text(query), engine)
@@ -143,9 +143,9 @@ def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
-    df_recortado = df.iloc[:, :10]
+    df_recortado = df.iloc[:, :11]
     worksheet = spreadsheet.worksheet(hoja_nombre)
-    worksheet.batch_clear(["A2:J"])
+    worksheet.batch_clear(["A2:K"])
     
     set_with_retry(worksheet, df_recortado, row=2, include_header=False)
     print("OK Exportado sin encabezado: Aux Stock")
