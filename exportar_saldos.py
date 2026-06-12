@@ -42,16 +42,46 @@ engine = create_engine(
 CUENTA_KEYWORD_VENTA = "venta"
 
 # ------------------------------------------------------------------------------
-# Funciones genericas con retry
+# Funciones genericas con retry y envio por lotes (chunking)
 # ------------------------------------------------------------------------------
 def set_with_retry(worksheet, df, retries=3, wait=5, row=1, include_header=True):
+    chunk_size = 10000  # Cantidad de filas a enviar por cada peticion
+    
     for i in range(1, retries + 1):
         try:
-            set_with_dataframe(worksheet, df, row=row, col=1, include_index=False, include_column_header=include_header, resize=False)
+            current_row = row
+            
+            # Recorremos el DataFrame en saltos de a 10.000
+            for start_row in range(0, len(df), chunk_size):
+                chunk = df.iloc[start_row : start_row + chunk_size]
+                
+                # El encabezado solo debe ir en el primer lote (si include_header es True)
+                is_first_chunk = (start_row == 0)
+                write_header = include_header and is_first_chunk
+                
+                set_with_dataframe(
+                    worksheet, 
+                    chunk, 
+                    row=current_row, 
+                    col=1, 
+                    include_index=False, 
+                    include_column_header=write_header, 
+                    resize=False
+                )
+                
+                # Calculamos donde debe empezar a pegarse el siguiente lote
+                current_row += len(chunk)
+                if write_header:
+                    current_row += 1
+                
+                # Pausa de 1.5 segundos entre lotes para no disparar el Rate Limit de Google (Error 429)
+                time.sleep(1.5)
+                
             print("OK Exportacion completada.")
             return
+            
         except Exception as e:
-            print(f"Intento {i}/{retries} fallo: {e}")
+            print(f"Intento {i}/{retries} fallo procesando cerca de la fila {current_row}: {e}")
             if i < retries:
                 print(f"Reintentando en {wait} segundos...")
                 time.sleep(wait)
@@ -135,7 +165,7 @@ def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     print("OK Exportado sin encabezado: Aux Libro Mayor")
 
 # ------------------------------------------------------------------------------
-# FUNCION: Exportar Stock A2:K sin encabezado
+# FUNCION: Exportar Stock A2:J sin encabezado
 # ------------------------------------------------------------------------------
 def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     df = pd.read_sql(text(query), engine)
@@ -143,9 +173,9 @@ def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
-    df_recortado = df.iloc[:, :11]
+    df_recortado = df.iloc[:, :10]
     worksheet = spreadsheet.worksheet(hoja_nombre)
-    worksheet.batch_clear(["A2:K"])
+    worksheet.batch_clear(["A2:J"])
     
     set_with_retry(worksheet, df_recortado, row=2, include_header=False)
     print("OK Exportado sin encabezado: Aux Stock")
