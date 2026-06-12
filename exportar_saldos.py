@@ -107,7 +107,8 @@ def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_deci
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
+            # CORRECCIÓN: Mantener el tipo float para que Google Sheets lo interprete correctamente
+            df[col] = df[col].apply(lambda x: float(x) if pd.notnull(x) else "")
 
     worksheet = get_or_create_worksheet(spreadsheet, hoja_nombre) if create_if_missing else spreadsheet.worksheet(hoja_nombre)
 
@@ -139,9 +140,8 @@ def exportar_tabla_corregida(query_or_df, spreadsheet, hoja_nombre):
             df[col] = df[col].astype(str).str.replace(".", "", regex=False).str.replace(",", "", regex=False)
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col] / 10000.0
-            df[col] = df[col].apply(
-                lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notnull(x) else ""
-            )
+            # CORRECCIÓN: Mantener el tipo float para que Google Sheets lo interprete correctamente
+            df[col] = df[col].apply(lambda x: float(x) if pd.notnull(x) else "")
 
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.clear()
@@ -156,7 +156,9 @@ def exportar_libro_mayor(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
+            # CORRECCIÓN: Mantener el tipo float
+            df[col] = df[col].apply(lambda x: float(x) if pd.notnull(x) else "")
+            
     df_recortado = df.iloc[:, :17]
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:Q"])
@@ -172,7 +174,9 @@ def exportar_stock(query, spreadsheet, hoja_nombre, columnas_decimal=[]):
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
+            # CORRECCIÓN: Mantener el tipo float
+            df[col] = df[col].apply(lambda x: float(x) if pd.notnull(x) else "")
+            
     df_recortado = df.iloc[:, :10]
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:J"])
@@ -188,7 +192,9 @@ def exportar_sumas_y_saldos(query, spreadsheet, hoja_nombre, columnas_decimal=[]
     for col in columnas_decimal:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].apply(lambda x: f"{x:.2f}".replace(".", ",") if pd.notnull(x) else "")
+            # CORRECCIÓN: Mantener el tipo float
+            df[col] = df[col].apply(lambda x: float(x) if pd.notnull(x) else "")
+            
     df_recortado = df.iloc[:, :10]
     worksheet = spreadsheet.worksheet(hoja_nombre)
     worksheet.batch_clear(["A2:J"])
@@ -232,7 +238,7 @@ def obtener_mapa_clientes_agrupados(spreadsheet, sheet_name="AUX_Agrup_Clientes"
         grp  = row[1]
         k    = norm_name(orig)
         if not k:
-             continue
+            continue
         grp_clean = str(grp).strip() if grp is not None else ""
         if grp_clean == "":
             continue
@@ -256,7 +262,7 @@ def aplicar_agrupacion_cliente(df: pd.DataFrame, mapa: dict, source_col="cliente
             return ""
         sx = str(x).strip()
         if sx == "":
-           return ""
+            return ""
         return mapa.get(norm_name(sx), sx)
 
     df[target_col] = df[source_col].apply(map_fn).astype(str).str.strip()
@@ -455,7 +461,7 @@ def crear_matriz_churn(df):
         primera_compra = primera_compra_dict.get(cliente_agrupado)
 
         if idx % 100 == 0:
-             print(f"Procesando cliente agrupado {idx}/{total_clientes}...")
+            print(f"Procesando cliente agrupado {idx}/{total_clientes}...")
 
         status_mes_anterior = None
 
@@ -641,6 +647,7 @@ def calcular_abc_mensual(
     df_full["_fecha_dt"] = pd.to_datetime(df_full["fechacomprobante"], errors="coerce")
     df_full["_periodo"]  = df_full["_fecha_dt"].dt.to_period("M").astype(str)
     df_full["_importe"]  = pd.to_numeric(df_full["importemonedaprincipal"], errors="coerce")
+    
     df_full = aplicar_agrupacion_cliente(
         df_full, mapa_clientes or {},
         source_col="clientenombre", target_col="_cliente_agrupado"
