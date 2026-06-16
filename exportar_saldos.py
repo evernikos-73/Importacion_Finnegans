@@ -1063,7 +1063,11 @@ exportar_sumas_y_saldos(
 cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
 
 print("\nEjecutando exportacion: CMV...")
-df_cmv = pd.read_sql(text("SELECT * FROM public.inpro2021nube_cmv"), engine)
+query_cmv = """
+SELECT * FROM public.inpro2021nube_cmv 
+WHERE ((Documento LIKE 'REMVTA%%' AND TipoMovimiento = 'Egresos') OR (Documento LIKE 'NCVST%%'))
+"""
+df_cmv = pd.read_sql(text(query_cmv), engine)
 df_cmv_recortado = df_cmv.iloc[:, :15]
 
 exportar_tabla_completa(
