@@ -932,7 +932,7 @@ exportar_tabla_completa(
     "SELECT * FROM public.inpro2021nube_sumas_y_saldos",
     saldos_sheet,
     "Base Sumas y Saldos",
-    ["sumadebe", "sumahaber", "saldoacumulado"]
+    ["saldoinicial", "debe", "haber", "saldoperiodo", "saldofinal"]
 )
 
 # 4. Stock comprometido
@@ -1054,7 +1054,7 @@ exportar_sumas_y_saldos(
     "SELECT * FROM public.inpro2021nube_sumas_y_saldos",
     libro_mayor_sheet,
     "Aux Sumas y Saldos",
-    ["Debe", "Haber", "saldoperiodo", "saldo", "saldoinicial"],
+    ["Debe", "Haber", "saldoperiodo", "saldo", "saldoinicial", "saldofinal"],
 )
 
 # ------------------------------------------------------------------------------
