@@ -96,6 +96,21 @@ def get_or_create_worksheet(spreadsheet, title, rows=1000, cols=26):
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 # ------------------------------------------------------------------------------
+# FUNCION NUEVA: Prevenir error de fórmulas en Google Sheets
+# ------------------------------------------------------------------------------
+def escape_sheets_formula(val):
+    """
+    Evita que Google Sheets interprete strings que empiezan con +, -, =, @ como fórmulas.
+    Agrega una comilla simple al principio, lo cual Sheets lo lee como texto plano.
+    """
+    if pd.isna(val) or val is None:
+        return ""
+    s = str(val)
+    if s.startswith(('+', '-', '=', '@')):
+        return "'" + s
+    return s
+
+# ------------------------------------------------------------------------------
 # FUNCION GENERICA: Exportar tabla completa
 # ------------------------------------------------------------------------------
 def exportar_tabla_completa(query_or_df, spreadsheet, hoja_nombre, columnas_decimal=[], clear_range=None, create_if_missing=False):
@@ -444,10 +459,14 @@ def generar_fechas_mensuales(df):
 
     return fechas
 
-def crear_matriz_churn(df):
+# ------------------------------------------------------------------------------
+# CAMBIO IMPORTANTE AQUI:
+# Se agrega parámetro "export_start_month" para filtrar y escapar strings
+# ------------------------------------------------------------------------------
+def crear_matriz_churn(df, export_start_month="2025-01"):
     clientes = df[["cliente_agrupado"]].drop_duplicates()
     fechas_mensuales = generar_fechas_mensuales(df)
-    print(f"Periodos a procesar: {len(fechas_mensuales)} meses")
+    print(f"Periodos a procesar: {len(fechas_mensuales)} meses. (Filtrando output a partir de {export_start_month})")
 
     primera_compra_df = df.groupby("cliente_agrupado")["fechacomprobante"].min().reset_index()
     primera_compra_df.columns = ["cliente_agrupado", "primera_compra"]
@@ -465,6 +484,7 @@ def crear_matriz_churn(df):
 
         status_mes_anterior = None
 
+        # El loop recorre TODO para calcular bien si es Nuevo/Retenido/etc
         for mes_inicio, mes_fin in fechas_mensuales:
             if primera_compra is not None and mes_fin < primera_compra.replace(day=1):
                 continue
@@ -473,12 +493,16 @@ def crear_matriz_churn(df):
 
             if status is not None:
                 mes_str = mes_inicio.strftime("%Y-%m")
-                resultados.append({
-                    "Cliente Agrupado": cliente_agrupado,
-                    "ClienteNombre": cliente_agrupado,
-                    "Mes": mes_str,
-                    "Status": status,
-                })
+                
+                # SOLO ANEXAMOS AL RESULTADO SI ES MAYOR O IGUAL A ENERO 2025
+                if mes_str >= export_start_month:
+                    resultados.append({
+                        # APLICAR escape_sheets_formula PARA EVITAR ERROR DE HOJA DE CÁLCULO
+                        "Cliente Agrupado": escape_sheets_formula(cliente_agrupado),
+                        "ClienteNombre": escape_sheets_formula(cliente_agrupado),
+                        "Mes": mes_str,
+                        "Status": status,
+                    })
 
             status_mes_anterior = status
 
@@ -604,6 +628,10 @@ def calcular_rfm(
     rfm["clientenombre"] = rfm["cliente_agrupado"]
     rfm = rfm.sort_values(["segment", "RFM_sum"], ascending=[True, False])
 
+    # APLICAMOS LA FUNCIÓN DE ESCAPE AQUÍ TAMBIÉN PARA PREVENIR ERRORES SIMILARES EN EL SHEET RFM
+    rfm["cliente_agrupado"] = rfm["cliente_agrupado"].apply(escape_sheets_formula)
+    rfm["clientenombre"] = rfm["clientenombre"].apply(escape_sheets_formula)
+
     rfm = rfm[[
         "cliente_agrupado", "clientenombre", "last_purchase", "recency_days",
         "frequency", "monetary_total_usd", "monetary_avg_usd", "R_score",
@@ -626,16 +654,6 @@ def calcular_abc_mensual(
     umbral_b: float = 0.95,
     cuenta_keyword: str = CUENTA_KEYWORD_VENTA
 ) -> pd.DataFrame:
-    """
-    Construye un lookup (periodo, cliente_agrupado) -> clase_abc
-    para luego mergear sobre df_facturacion_full.
-
-    Solo se clasifican filas cuyo cuentanombre empieza con cuenta_keyword
-    (case-insensitive). El resto recibe clase_abc = "" (cadena vacia).
-
-    Retorna el DataFrame original con la columna clase_abc agregada al final.
-    Las filas que NO son de venta quedan con clase_abc = "".
-    """
     required = ["clientenombre", "fechacomprobante", "cuentanombre", "importemonedaprincipal"]
     missing  = [c for c in required if c not in df_facturacion_full.columns]
     if missing:
@@ -996,7 +1014,7 @@ df_facturacion_churn = obtener_datos_facturacion(
     df_facturacion_full=df_facturacion_full,
     mapa_clientes=mapa_clientes_agrupados
 )
-matriz_churn = crear_matriz_churn(df_facturacion_churn)
+matriz_churn = crear_matriz_churn(df_facturacion_churn, export_start_month="2025-01")
 
 exportar_tabla_completa(
     matriz_churn,
