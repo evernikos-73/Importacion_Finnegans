@@ -1055,11 +1055,10 @@ exportar_tabla_completa(
 libro_mayor_sheet = client.open_by_url(SPREADSHEET_LIBRO_MAYOR_URL)
 
 # NUEVO FILTRO: Solo cuentas de resultado (código que empieza con 4 o más)
-# IMPORTANTE: Verificá que el nombre exacto de la columna en tu base de datos 
-# sea 'codigoalternativo'. Si es distinto (ej: 'cuentacontablecodigo'), cambialo en el WHERE.
+# CORRECCIÓN: Se agregó el guion bajo a codigo_alternativo
 query_libro_mayor = """
 SELECT * FROM public.inpro2021nube_libro_mayor 
-WHERE LEFT(CAST(codigoalternativo AS TEXT), 1) IN ('4', '5', '6', '7', '8', '9')
+WHERE LEFT(CAST(codigo_alternativo AS TEXT), 1) IN ('4', '5', '6', '7', '8', '9')
 """
 
 exportar_libro_mayor(
