@@ -1090,7 +1090,12 @@ cmv_sheet = client.open_by_key(SPREADSHEET_CMV_ID)
 print("\nEjecutando exportacion: CMV...")
 query_cmv = """
 SELECT * FROM public.inpro2021nube_cmv  
-WHERE  mes >= '2026-02' AND ((Documento LIKE 'REMVTA%%' AND TipoMovimiento = 'Egresos') OR (Documento LIKE 'NCVST%%'))
+WHERE mes >= '2026-02' 
+  AND (
+      (Documento LIKE 'REMVTA%%' AND TipoMovimiento = 'Egresos') 
+      OR (Documento LIKE 'NCVST%%')
+      OR (Documento LIKE 'PACKLIST%%')
+  )
 """
 df_cmv = pd.read_sql(text(query_cmv), engine)
 df_cmv_recortado = df_cmv.iloc[:, :15]
